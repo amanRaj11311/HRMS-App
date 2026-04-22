@@ -1,0 +1,35 @@
+buildscript {
+    ext {
+        buildToolsVersion = "36.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 36
+        targetSdkVersion = 36
+        ndkVersion = "27.1.12297006"
+        kotlinVersion = "2.1.20"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // ✅ In teeno lines ko dhyan se dekho, version numbers ab fixed hain
+        classpath("com.android.tools.build:gradle:8.2.1")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
+    }
+}
+
+// ⛔ Yahan beech mein kuch mat daalna
+apply plugin: "com.facebook.react.rootproject"
+
+// ✅ Allprojects ko bilkul simple rakha hai, koi manual node_modules path nahi
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        
+        // ✅ Add these two lines specifically for AsyncStorage fallback
+        maven { url 'https://www.jitpack.io' }
+        maven { url("$rootDir/../node_modules/@react-native-async-storage/async-storage/android") }
+    }
+}
