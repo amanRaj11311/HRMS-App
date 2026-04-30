@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "prefabPath": "C:\\Users\\Aman raj\\.gradle\\caches\\modules-2\\files-2.1\\com.google.prefab\\cli\\2.1.0\\aa32fec809c44fa531f01dcfb739b5b3304d3050\\cli-2.1.0-all.jar",
+  "packages": [
+    "C:\\Users\\Aman raj\\.gradle\\caches\\9.0.0\\transforms\\2e707b7d95bcb8ea237e432004a1e376\\transformed\\react-android-0.84.1-debug\\prefab",
+    "C:\\ReactNative\\DcsHrmsAppNew\\node_modules\\react-native-reanimated\\android\\build\\intermediates\\prefab_package\\debug\\prefab",
+    "C:\\ReactNative\\DcsHrmsAppNew\\node_modules\\react-native-worklets\\android\\build\\intermediates\\prefab_package\\debug\\prefab",
+    "C:\\ReactNative\\DcsHrmsAppNew\\node_modules\\react-native-worklets-core\\android\\build\\intermediates\\prefab_package\\debug\\prefab",
+    "C:\\Users\\Aman raj\\.gradle\\caches\\9.0.0\\transforms\\70cc2777d3eef59c7e6917d1f30d89c3\\transformed\\hermes-android-250829098.0.9-debug\\prefab",
+    "C:\\Users\\Aman raj\\.gradle\\caches\\9.0.0\\transforms\\e7473c857601e28b1e2206e8cc081ebf\\transformed\\fbjni-0.7.0\\prefab"
+  ]
+}

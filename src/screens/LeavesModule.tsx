@@ -11,6 +11,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import {showLocalNotification} from '../services/notificationService';
 
 const { width } = Dimensions.get("window");
 const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
@@ -194,6 +195,15 @@ export default function LeavesModule({ navigation }: any) {
       });
 
       if (res.data?.success) {
+          const appliedByName =
+            leaveForm.employeeName && leaveForm.employeeName !== 'Select Employee'
+              ? leaveForm.employeeName
+              : 'You';
+          const leaveDateRange = `${leaveForm.fromDate} to ${leaveForm.toDate}`;
+          showLocalNotification(
+            'Leave Application Submitted',
+            `${appliedByName} applied for ${leaveForm.type} (${leaveDateRange}).`,
+          );
           Alert.alert("Success", "Leave Request Submitted Successfully!");
           setIsApplyModalVisible(false);
           setLeaveForm({ employeeId: '', employeeName: 'Select Employee', type: 'Casual Leave', fromDate: '', toDate: '', reason: '', isHalfDay: false, duration: 0 });

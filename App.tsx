@@ -4,6 +4,10 @@ import { View, ActivityIndicator } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AppNavigator from "./src/navigation/AppNavigator";
+import {
+  initializeNotifications,
+  requestNotificationPermission,
+} from './src/services/notificationService';
 
 // Custom Theme Provider
 import { ThemeProvider } from "./src/constants/theme";
@@ -13,6 +17,9 @@ export default function App() {
   const [initialRoute, setInitialRoute] = useState("LoginScreen"); // Default to Login
 
   useEffect(() => {
+    initializeNotifications();
+    requestNotificationPermission();
+
     const checkAuthStatus = async () => {
       try {
         const token = await AsyncStorage.getItem('userToken');

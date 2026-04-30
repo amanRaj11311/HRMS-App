@@ -13,6 +13,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme';
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import {showLocalNotification} from '../services/notificationService';
 
 import Geolocation from 'react-native-geolocation-service';
 import ImagePicker from 'react-native-image-crop-picker';
@@ -657,6 +658,7 @@ export default function AttendanceModule({ navigation }: any) {
   };
 
   let baseDateRecords: any[] = [];
+  let absentCountForSelectedDate = 0;
 
   if (canDo('VIEW')) {
       const targetDateStr = getSafeDateString(filterDate);
@@ -670,6 +672,7 @@ export default function AttendanceModule({ navigation }: any) {
           const absentEmps = allEmployees.filter(e => !punchedIds.includes(e._id)).map(e => ({
               _id: `absent-${e._id}`, employeeId: e, status: 'absent', date: filterDate, checkIn: null, checkOut: null
           }));
+          absentCountForSelectedDate = absentEmps.length;
           baseDateRecords = [...baseDateRecords, ...absentEmps];
       }
   } else {
@@ -726,6 +729,30 @@ export default function AttendanceModule({ navigation }: any) {
       
       baseDateRecords.sort((a, b) => new Date(b.date || b.checkIn?.time).getTime() - new Date(a.date || a.checkIn?.time).getTime());
   }
+
+  useEffect(() => {
+    const notifyAbsentEmployees = async () => {
+      const hasViewPermission = permissions.includes('ATTENDANCE:VIEW');
+      if (!hasViewPermission || absentCountForSelectedDate <= 0) {
+        return;
+      }
+
+      const dateKey = getSafeDateString(filterDate);
+      const storageKey = `absent_notified_${dateKey}`;
+      const alreadyNotified = await AsyncStorage.getItem(storageKey);
+      if (alreadyNotified === String(absentCountForSelectedDate)) {
+        return;
+      }
+
+      await AsyncStorage.setItem(storageKey, String(absentCountForSelectedDate));
+      showLocalNotification(
+        'Absent Employees Found',
+        `${absentCountForSelectedDate} employee(s) marked absent on ${dateKey}.`,
+      );
+    };
+
+    notifyAbsentEmployees();
+  }, [absentCountForSelectedDate, filterDate, permissions]);
 
   let p = 0, a = 0, l = 0, h = 0;
   baseDateRecords.forEach(r => {
@@ -811,7 +838,7 @@ export default function AttendanceModule({ navigation }: any) {
             <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border}]} onPress={() => setShowStatusModal(true)}><Text style={[styles.filterText, {color: colors.textMain}]}>{filterStatus}</Text></TouchableOpacity>
         </View>
 
-       <TouchableOpacity
+      {/*  <TouchableOpacity
   style={[
     styles.smartPunchBtnNew,
     isPunching && { opacity: 0.7 }
@@ -842,7 +869,7 @@ export default function AttendanceModule({ navigation }: any) {
     <Feather name="arrow-right" size={22} color="#fff" />
 
   </View>
-</TouchableOpacity>
+</TouchableOpacity> */}
         {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{marginTop: 50}}/> : displayRecords.map((item, index) => (
             <View key={index} style={[styles.attCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
                 <View style={styles.cardHeader}>

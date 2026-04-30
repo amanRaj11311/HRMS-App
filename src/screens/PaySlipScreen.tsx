@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, TouchableOpacity, SafeAreaView, Platform, StatusBar, Alert, Image } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -6,6 +6,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import {showLocalNotification} from '../services/notificationService';
 
 import RNPrint from 'react-native-print'; 
 
@@ -89,6 +90,29 @@ export default function PayslipsScreen({ navigation }: any) {
   };
 
   useFocusEffect(useCallback(() => { fetchMySlip(); }, [selectedMonth, selectedYear]));
+
+  useEffect(() => {
+    const notifyPayslipAvailability = async () => {
+      if (!slipData?._id) {
+        return;
+      }
+
+      const monthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+      const notificationKey = `payslip_notified_${monthKey}`;
+      const alreadyNotified = await AsyncStorage.getItem(notificationKey);
+      if (alreadyNotified === slipData._id) {
+        return;
+      }
+
+      await AsyncStorage.setItem(notificationKey, slipData._id);
+      showLocalNotification(
+        'Payslip Available',
+        `Your payslip for ${MONTHS[selectedMonth - 1]} ${selectedYear} is now available.`,
+      );
+    };
+
+    notifyPayslipAvailability();
+  }, [slipData, selectedMonth, selectedYear]);
 
   const canViewSlip = permissions.includes('SALARY-SLIP:VIEW') || permissions.includes('PAYROLL:VIEW');
 

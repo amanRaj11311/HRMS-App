@@ -8,6 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Feather from 'react-native-vector-icons/Feather';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import {showLocalNotification} from '../services/notificationService';
 
 const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
 
@@ -97,9 +98,17 @@ const AnnouncementsScreen = ({ navigation }: any) => {
       
       if (isEditing) {
         await axios.put(`${API_BASE}/announcements/${editRecordId}`, formData, config);
+        showLocalNotification(
+          'Announcement Updated',
+          `${formData.title} has been updated.`,
+        );
         Alert.alert("Success", "Updated successfully.");
       } else {
         await axios.post(`${API_BASE}/announcements`, formData, config);
+        showLocalNotification(
+          'New Announcement',
+          `${formData.title} has been published.`,
+        );
         Alert.alert("Success", "Published successfully.");
       }
       setIsAddModalVisible(false);
