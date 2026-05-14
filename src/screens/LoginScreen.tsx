@@ -154,5 +154,5 @@ const styles = StyleSheet.create({
   rememberText: { fontSize: 14, color: "#64748B" },
   btnContainer: { alignItems: 'center', justifyContent: 'center', height: 57 },
   loginBtn: { backgroundColor: "#1976D2", height: 56, borderRadius: 28, justifyContent: "center", alignItems: "center", flexDirection: 'row' },
-  loginText: { color: "#fff", fontWeight: "bold", fontSize: 18 }
+  loginText: { color: "#fff", fontWeight: "bold", fontSize: 17 }
 });

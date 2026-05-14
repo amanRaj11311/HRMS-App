@@ -44,17 +44,21 @@ export default function GlobalAppBar({ navigation, onSearch, searchQuery }: any)
         }
 
         if (name && name !== 'User') {
-          const parts = name.trim().split(" ");
-          setUserInitials(
-            parts.length > 1
-              ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-              : name.substring(0, 2).toUpperCase()
-          );
-        } else {
-            const role = await AsyncStorage.getItem('userRole');
-            if (role?.toUpperCase() === 'ADMIN') setUserInitials('SA');
-            else if (role?.toUpperCase() === 'HR') setUserInitials('HR');
-        }
+  const cleanName = name.trim().replace(/\s+/g, ' ');
+  const parts = cleanName.split(' ');
+
+  let initials = '';
+
+  if (parts.length > 1) {
+    initials =
+      parts[0].charAt(0) +
+      parts[parts.length - 1].charAt(0);
+  } else {
+    initials = parts[0].substring(0, 2);
+  }
+
+  setUserInitials(initials.toUpperCase());
+}
       } catch (e) {
         console.log("AppBar Error:", e);
       }
@@ -143,7 +147,17 @@ export default function GlobalAppBar({ navigation, onSearch, searchQuery }: any)
                    onError={() => setImgError(true)} 
                />
            ) : (
-               <Text style={styles.avatarText}>{userInitials}</Text>
+               <View
+  style={{
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  }}
+>
+  <Text style={styles.avatarText}>
+    {userInitials}
+  </Text>
+</View>
            )}
         </TouchableOpacity>
       </View>
@@ -205,21 +219,34 @@ const styles = StyleSheet.create({
   rightSection: { flexDirection: 'row', alignItems: 'center' },
   iconBtn: { padding: 8 },
   
-  avatar: { 
-      width: 36, 
-      height: 36, 
-      borderRadius: 18, 
-      backgroundColor: '#3b82f6', 
-      justify: 'center', 
-      alignItems: 'center',
-      overflow: 'hidden'
-  },
+avatar: {
+  width: 40,
+  height: 40,
+  borderRadius: 20,
+  backgroundColor: '#3b82f6',
+  overflow: 'hidden',
+
+  justifyContent: 'center',
+  alignItems: 'center',
+},
   avatarImage: {
       width: '100%',
       height: '100%',
-      resizeMode: 'cover'
+       borderRadius: 20,
+      
   },
-  avatarText: { color: '#fff', fontSize: 13, fontWeight: 'bold' },
+  avatarText: {
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: '700',
+
+  includeFontPadding: false,
+
+  textAlign: 'center',
+  textAlignVertical: 'center',
+
+  lineHeight: 14,
+},
   
   searchInput: { 
       flex: 1, 

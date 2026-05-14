@@ -20,13 +20,12 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import DocumentPicker from 'react-native-document-picker'; 
 import { useTheme } from '../constants/theme';
 import { DrawerActions } from '@react-navigation/native'; 
 import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
 
-
-// 🚀 100% SAFE DECODER - Ye kabhi infinite loop me nahi fasega
 const safeDecodeJWT = (token: string) => {
   try {
     const base64Url = token.split('.')[1];
@@ -66,6 +65,10 @@ export default function DocumentsScreen({ navigation }: any) {
   const [actionLoading, setActionLoading] = useState(false);
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   
+  const [canViewAllDocs, setCanViewAllDocs] = useState(false);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [selectedFile, setSelectedFile] = useState<any>(null); 
+
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [userInitials, setUserInitials] = useState('US');
@@ -77,10 +80,14 @@ export default function DocumentsScreen({ navigation }: any) {
     name: '',
     type: 'Offer Letter',
     url: '',
-    description: ''
+    description: '',
+    targetEmployeeId: '', 
+    targetEmployeeName: 'Select Employee'
   });
 
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
+  const [isEmpDropdownVisible, setIsEmpDropdownVisible] = useState(false); 
+
   const documentTypes = [
     'Offer Letter', 'Appointment Letter', 'Salary Slip', 
     'Experience Letter', 'ID Card', 'Tax Document', 'Other'
@@ -105,20 +112,39 @@ export default function DocumentsScreen({ navigation }: any) {
       const interval = setInterval(() => fetchDocuments(true), 25000);
       return () => clearInterval(interval);
     }
-  }, [employeeId]);
+  }, [employeeId, canViewAllDocs]);
 
   const getUserData = async () => {
     try {
       const name = await AsyncStorage.getItem('userName');
       const token = await AsyncStorage.getItem('userToken');
+      const perms = await AsyncStorage.getItem('userPermissions');
       
+      let hasViewAll = false;
+      if (perms) {
+          const parsedPerms = JSON.parse(perms);
+          hasViewAll = parsedPerms.some((p: string) => p.toUpperCase() === 'DOCUMENTS:VIEW_ALL' || p.toUpperCase() === 'DOCUMENTS:VIEW-ALL');
+          setCanViewAllDocs(hasViewAll);
+      }
+
       if (token) {
           const decoded = safeDecodeJWT(token);
+          let currentEmpId = null;
           if (decoded && (decoded.id || decoded._id || decoded.userId)) {
-              setEmployeeId(decoded.id || decoded._id || decoded.userId);
+              currentEmpId = decoded.id || decoded._id || decoded.userId;
+              setEmployeeId(currentEmpId);
           } else {
               const empId = await AsyncStorage.getItem('employeeId');
-              if (empId) setEmployeeId(empId);
+              if (empId) {
+                  currentEmpId = empId;
+                  setEmployeeId(empId);
+              }
+          }
+
+          if (hasViewAll) {
+              const empRes = await axios.get(`${API_BASE}/employees?limit=500`, { headers: { Authorization: `Bearer ${token}` } });
+              const emps = empRes.data?.data?.data || empRes.data?.data || [];
+              setAllEmployees(emps.filter((e:any) => !e.isDeleted));
           }
       }
       
@@ -137,7 +163,12 @@ export default function DocumentsScreen({ navigation }: any) {
       if (!isSilent && documents.length === 0) setLoading(true);
       const token = await AsyncStorage.getItem('userToken');
       
-      const res = await axios.get(`${API_BASE}/documents?employeeId=${employeeId}`, {
+      let url = `${API_BASE}/documents`;
+      if (!canViewAllDocs) {
+          url += `?employeeId=${employeeId}`;
+      }
+
+      const res = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = res.data?.data || res.data || [];
@@ -156,33 +187,73 @@ export default function DocumentsScreen({ navigation }: any) {
     fetchDocuments(true);
   };
 
+  const handlePickFile = async () => {
+    try {
+      const res = await DocumentPicker.pick({
+        type: [DocumentPicker.types.images, DocumentPicker.types.pdf],
+      });
+      if (res && res.length > 0) {
+        setSelectedFile(res[0]);
+        setDocForm({...docForm, url: res[0].name || 'File Selected'}); 
+      }
+    } catch (err) {
+      if (!DocumentPicker.isCancel(err)) {
+        Alert.alert('Error', 'Failed to pick document');
+      }
+    }
+  };
+
   const handleSaveDocument = async () => {
-    if (!docForm.name || !docForm.url) {
-      Alert.alert("Required", "Please fill the required fields (*)");
+    if (!docForm.name || (!selectedFile && !docForm.url)) {
+      Alert.alert("Required", "Please provide Document Name and select a file or paste URL (*)");
+      return;
+    }
+
+    if (canViewAllDocs && !docForm.targetEmployeeId) {
+      Alert.alert("Required", "Please select an employee.");
       return;
     }
     
     try {
       setActionLoading(true);
       const token = await AsyncStorage.getItem('userToken');
-      
       const formattedDocType = docForm.type.toLowerCase().replace(/\s+/g, '-');
+      const targetId = canViewAllDocs ? docForm.targetEmployeeId : employeeId;
 
-      const payload = {
-        employeeId: employeeId,
-        documentName: docForm.name.trim(),
-        documentType: formattedDocType, 
-        documentUrl: docForm.url.trim(),
-        remarks: docForm.description 
+      let config: any = {
+          headers: { Authorization: `Bearer ${token}` }
       };
 
-      await axios.post(`${API_BASE}/documents`, payload, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // 🚀 FIXED: JSON Parsing Error Issue. If file is selected -> Multipart. If URL -> JSON.
+      if (selectedFile) {
+          const formData = new FormData();
+          formData.append('employeeId', targetId);
+          formData.append('documentName', docForm.name.trim());
+          formData.append('documentType', formattedDocType);
+          formData.append('remarks', docForm.description);
+          formData.append('file', {
+              uri: selectedFile.uri,
+              type: selectedFile.type || 'application/pdf',
+              name: selectedFile.name || 'document.pdf'
+          } as any);
+
+          config.headers['Content-Type'] = 'multipart/form-data';
+          await axios.post(`${API_BASE}/documents`, formData, config);
+      } else {
+          const payload = {
+              employeeId: targetId,
+              documentName: docForm.name.trim(),
+              documentType: formattedDocType,
+              documentUrl: docForm.url.trim(),
+              remarks: docForm.description
+          };
+          await axios.post(`${API_BASE}/documents`, payload, config);
+      }
       
       Alert.alert("Success", "Document added successfully.");
       setIsModalVisible(false);
-      setDocForm({ name: '', type: 'Offer Letter', url: '', description: '' });
+      setDocForm({ name: '', type: 'Offer Letter', url: '', description: '', targetEmployeeId: '', targetEmployeeName: 'Select Employee' });
+      setSelectedFile(null);
       fetchDocuments(true); 
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.response?.data?.error || error.message || "Failed to add document.";
@@ -234,7 +305,13 @@ export default function DocumentsScreen({ navigation }: any) {
     const searchLow = searchQuery.toLowerCase();
     const docName = (doc.documentName || '').toLowerCase();
     const docType = formatDisplayType(doc.documentType).toLowerCase();
-    return searchQuery === '' || docName.includes(searchLow) || docType.includes(searchLow);
+    
+    let empName = '';
+    if (canViewAllDocs && doc.employeeId && doc.employeeId.firstName) {
+        empName = `${doc.employeeId.firstName} ${doc.employeeId.lastName}`.toLowerCase();
+    }
+    
+    return searchQuery === '' || docName.includes(searchLow) || docType.includes(searchLow) || empName.includes(searchLow);
   });
 
   const renderCategoryCard = ({ item }: { item: any }) => (
@@ -249,6 +326,7 @@ export default function DocumentsScreen({ navigation }: any) {
 
   const renderDocumentItem = ({ item }: { item: any }) => {
     const formattedDate = item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-GB') : '--';
+    const empName = item.employeeId?.firstName ? `${item.employeeId.firstName} ${item.employeeId.lastName}` : '';
     
     return (
       <View style={styles.docItemCard}>
@@ -258,13 +336,22 @@ export default function DocumentsScreen({ navigation }: any) {
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={styles.docItemName}>{item.documentName}</Text>
-            <Text style={styles.docItemType}>{formatDisplayType(item.documentType)} • Added on {formattedDate}</Text>
+            <Text style={styles.docItemType}>{formatDisplayType(item.documentType)} • {formattedDate}</Text>
+            {canViewAllDocs && empName ? <Text style={[styles.docItemType, {color: colors.primary, marginTop: 2, fontWeight: 'bold'}]}>{empName}</Text> : null}
           </View>
         </View>
         <View style={{flexDirection: 'row', alignItems: 'center'}}>
             <TouchableOpacity 
               style={styles.viewBtn}
-              onPress={() => Linking.openURL(item.documentUrl).catch(() => alert("Invalid URL"))}
+              onPress={() => {
+                  let url = item.documentUrl;
+                  if (url) {
+                      // 🚀 FIXED: Space decoding issue causing unopenable PDF files
+                      let clean = url.replace(/\\/g, '/');
+                      let fullUrl = clean.startsWith('http') ? clean : `${API_BASE.replace('/api', '')}${clean.startsWith('/') ? '' : '/'}${clean}`;
+                      Linking.openURL(encodeURI(fullUrl)).catch(() => alert("Invalid URL"));
+                  }
+              }}
             >
               <Text style={styles.viewBtnText}>View</Text>
             </TouchableOpacity>
@@ -283,7 +370,6 @@ export default function DocumentsScreen({ navigation }: any) {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle={isLightMode ? "dark-content" : "light-content"} backgroundColor="transparent" translucent={true} />
        
-      {/* 🚀 REPLACED LOCAL APP BAR WITH GLOBAL APP BAR */}
       <GlobalAppBar 
         navigation={navigation} 
         showSearch={true} 
@@ -296,11 +382,15 @@ export default function DocumentsScreen({ navigation }: any) {
         <View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
              <MaterialCommunityIcons name="folder-open" size={28} color={colors.primary} style={{ marginRight: 8 }} />
-             <Text style={styles.pageTitleText}>My Documents</Text>
+             <Text style={styles.pageTitleText}>{canViewAllDocs ? "All Documents" : "My Documents"}</Text>
           </View>
           <Text style={styles.subtitle}>Access and manage employment documents</Text>
         </View>
-        <TouchableOpacity style={styles.iconAddBtn} onPress={() => setIsModalVisible(true)}>
+        <TouchableOpacity style={styles.iconAddBtn} onPress={() => {
+            setDocForm({ name: '', type: 'Offer Letter', url: '', description: '', targetEmployeeId: '', targetEmployeeName: 'Select Employee' });
+            setSelectedFile(null);
+            setIsModalVisible(true);
+        }}>
            <MaterialCommunityIcons name="plus" size={24} color="#FFF" />
         </TouchableOpacity>
       </View>
@@ -365,6 +455,20 @@ export default function DocumentsScreen({ navigation }: any) {
               </View>
               
               <View style={styles.modalBody}>
+                {canViewAllDocs && (
+                  <>
+                    <Text style={styles.inputLabel}>Employee *</Text>
+                    <TouchableOpacity 
+                      style={styles.dropdownInput} 
+                      onPress={() => setIsEmpDropdownVisible(true)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.dropdownText}>{docForm.targetEmployeeName}</Text>
+                      <MaterialCommunityIcons name="chevron-down" size={20} color={colors.textSub} />
+                    </TouchableOpacity>
+                  </>
+                )}
+
                 <Text style={styles.inputLabel}>Document Name *</Text>
                 <TextInput 
                   style={styles.textInput}
@@ -384,14 +488,27 @@ export default function DocumentsScreen({ navigation }: any) {
                   <MaterialCommunityIcons name="chevron-down" size={20} color={colors.textSub} />
                 </TouchableOpacity>
                 
-                <Text style={styles.inputLabel}>Document URL *</Text>
-                <TextInput 
-                  style={styles.textInput}
-                  placeholder="https://drive.google.com/..."
-                  placeholderTextColor={colors.textSub}
-                  value={docForm.url}
-                  onChangeText={(txt) => setDocForm({...docForm, url: txt})}
-                />
+                <Text style={styles.inputLabel}>File / Document URL *</Text>
+                <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                    <TouchableOpacity 
+                      style={[styles.dropdownInput, { flex: 1, marginRight: 10, justifyContent: 'center', backgroundColor: colors.primary + '15', borderColor: colors.primary }]}
+                      onPress={handlePickFile}
+                    >
+                      <MaterialCommunityIcons name="upload" size={18} color={colors.primary} style={{marginRight: 6}} />
+                      <Text style={[styles.dropdownText, { color: colors.primary, fontWeight: 'bold' }]} numberOfLines={1}>
+                        {selectedFile ? 'File Selected' : 'Upload File'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TextInput 
+                      style={[styles.textInput, { flex: 2 }]}
+                      placeholder="Or Paste URL..."
+                      placeholderTextColor={colors.textSub}
+                      value={docForm.url}
+                      onChangeText={(txt) => setDocForm({...docForm, url: txt})}
+                      editable={!selectedFile} 
+                    />
+                </View>
+                {selectedFile && <Text style={{fontSize: 11, color: colors.primary, marginTop: 4}}>{selectedFile.name}</Text>}
                 
                 <Text style={styles.inputLabel}>Description</Text>
                 <TextInput 
@@ -444,6 +561,33 @@ export default function DocumentsScreen({ navigation }: any) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <Modal visible={isEmpDropdownVisible} transparent animationType="fade" onRequestClose={() => setIsEmpDropdownVisible(false)}>
+        <TouchableOpacity style={styles.dropdownOverlay} activeOpacity={1} onPress={() => setIsEmpDropdownVisible(false)}>
+          <View style={[styles.dropdownMenu, {maxHeight: 300}]}>
+            <ScrollView nestedScrollEnabled={true}>
+                {allEmployees.map((emp) => {
+                  const fName = emp.userId?.firstName || emp.firstName || '';
+                  const lName = emp.userId?.lastName || emp.lastName || '';
+                  return (
+                    <TouchableOpacity 
+                        key={emp._id} 
+                        style={[styles.dropdownItem, docForm.targetEmployeeId === emp._id && styles.dropdownItemActive]}
+                        onPress={() => {
+                        setDocForm({...docForm, targetEmployeeId: emp._id, targetEmployeeName: `${fName} ${lName}`});
+                        setIsEmpDropdownVisible(false);
+                        }}
+                    >
+                        <Text style={[styles.dropdownItemText, docForm.targetEmployeeId === emp._id && styles.dropdownItemTextActive]}>
+                        {fName} {lName}
+                        </Text>
+                    </TouchableOpacity>
+                  )
+                })}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -452,7 +596,6 @@ const getDynamicStyles = (colors: any, isLight: boolean) => StyleSheet.create({
   container: { 
       flex: 1, 
       backgroundColor: isLight ? '#EFF6FF' : colors.background,
-      // 🚀 ADD THIS LINE TO FIX THE OVERLAP
       paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0 
   },
   pageTitleText: { fontSize: 22, fontWeight: '900', color: colors.textMain },
