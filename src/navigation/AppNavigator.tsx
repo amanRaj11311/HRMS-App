@@ -26,17 +26,21 @@ import DocumentsScreen from "../screens/DocumentsScreen";
 import SettingsScreen from "../screens/SettingsScreen";
 import PayslipsScreen from "../screens/PaySlipScreen.tsx";
 import AnnouncementsScreen from "../screens/announcementScreen";
+// 🚀 FIXED: Retained the direct module binding to the dynamic global API configuration path
+import { API_BASE } from '../api/api';
+
 
 const Stack = createNativeStackNavigator();
 const Drawer = createDrawerNavigator();
-const API_BASE = 'https://hrms.dcstechnosis.com/api';
+
 
 const getCleanAvatarUrl = (url: string) => {
     if (!url) return '';
     let clean = url.replace(/\\/g, '/'); 
     let fullUrl = clean;
     if (!clean.startsWith('http')) {
-        fullUrl = clean.startsWith('/') ? `https://hrms.dcstechnosis.com${clean}` : `https://hrms.dcstechnosis.com/${clean}`;
+        // 🚀 FIXED: Substituted the absolute static domain origin with the dynamic API_BASE pointer mapping
+        fullUrl = clean.startsWith('/') ? `${API_BASE.replace('/api', '')}${clean}` : `${API_BASE.replace('/api', '')}/${clean}`;
     }
     return encodeURI(fullUrl); 
 };

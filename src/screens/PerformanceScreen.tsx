@@ -9,8 +9,8 @@ import Feather from 'react-native-vector-icons/Feather';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
 const PERIODS = [
   'Q1 2026', 'Q2 2026', 'Q3 2026', 'Q4 2026',
   'Q1 2025', 'Q2 2025', 'Q3 2025', 'Q4 2025', 

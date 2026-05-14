@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 A modular Human Resource Management System (HRMS) mobile application built using React Native with **Role-Based Access Control (RBAC)**.
 
@@ -63,11 +64,27 @@ Admin → Assign Role → Assign Modules → User Login → Dynamic Dashboard
 ### ⚙️ Role & Permission System
 - Dynamic module access
 - Admin-controlled visibility
+=======
+# HRMS React Native App
+
+A Human Resource Management System (HRMS) mobile application built using React Native. This app is designed to manage employee-related operations efficiently within an organization.
+
+---
+
+## 🚀 Features
+
+- Employee Management  
+- Attendance Tracking  
+- Notifications System  
+- Secure Authentication  
+- Cross-platform support (Android & iOS)  
+>>>>>>> 3ad8db5 (Reconnected project)
 
 ---
 
 ## 🛠️ Tech Stack
 
+<<<<<<< HEAD
 - React Native
 - TypeScript
 - REST APIs
@@ -83,3 +100,19 @@ Admin → Assign Role → Assign Modules → User Login → Dynamic Dashboard
 
 ## 👨‍💻 Author
 DCS TECHNOSIS
+=======
+- React Native  
+- TypeScript  
+- Node.js (Backend API) *(if applicable)*  
+- REST APIs  
+- Android Studio / Xcode  
+
+---
+
+## 📦 Installation
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/dcstechnosis2026/HRMS_react_native_app.git
+cd HRMS_react_native_app
+>>>>>>> 3ad8db5 (Reconnected project)

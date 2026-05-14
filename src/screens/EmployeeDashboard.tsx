@@ -14,15 +14,16 @@ import {
   RefreshControl,
 } from "react-native";
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import Feather from 'react-native-vector-icons/Feather'; // 🚀 Added Feather for the pins
+import Feather from 'react-native-vector-icons/Feather'; 
 import AsyncStorage from '@react-native-async-storage/async-storage'; 
 import axios from 'axios'; 
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
+// 🚀 FIXED: Centralized API Base Import
+import { API_BASE } from '../api/api'; 
 
 const { width } = Dimensions.get("window");
 
-// 🚀 WEB KI TARAH FIXED LIMITS
 const LEAVE_LIMITS = {
   casual: 12,
   sick: 8, 
@@ -96,10 +97,11 @@ export default function EmployeeDashboard({ navigation }: any) {
         } 
       };
 
+      // 🚀 FIXED: Using Global API_BASE
       const results = await Promise.allSettled([
-        axios.get(`https://hrms.dcstechnosis.com/api/leaves?employeeId=${employeeId}&limit=500`, config), 
-        axios.get(`https://hrms.dcstechnosis.com/api/attendance?employeeId=${employeeId}`, config),
-        axios.get(`https://hrms.dcstechnosis.com/api/announcements?limit=30`, config) // 🚀 INCREASED LIMIT TO 30
+        axios.get(`${API_BASE}/leaves?employeeId=${employeeId}&limit=500`, config), 
+        axios.get(`${API_BASE}/attendance?employeeId=${employeeId}`, config),
+        axios.get(`${API_BASE}/announcements?limit=30`, config) 
       ]);
 
       if (results[0].status === 'fulfilled') {
@@ -187,14 +189,11 @@ export default function EmployeeDashboard({ navigation }: any) {
 
       if (results[2].status === 'fulfilled') {
           const fetchedAnns = results[2].value.data?.data || [];
-          
-          // 🚀 Pinned Announcements ko hamesha Top par rakhne ka logic
           const sortedAnns = fetchedAnns.sort((a: any, b: any) => {
               if (a.isPinned && !b.isPinned) return -1;
               if (!a.isPinned && b.isPinned) return 1;
               return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
           });
-          
           setAnnouncements(sortedAnns);
       }
 
@@ -211,7 +210,8 @@ export default function EmployeeDashboard({ navigation }: any) {
     try {
       const token = await AsyncStorage.getItem('userToken');
       if (token) {
-        await axios.get(`https://hrms.dcstechnosis.com/api/device/attendance`, { 
+        // 🚀 FIXED: Using Global API_BASE
+        await axios.get(`${API_BASE}/device/attendance`, { 
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Accept': 'application/json'
@@ -241,13 +241,15 @@ export default function EmployeeDashboard({ navigation }: any) {
       };
 
       if (!isCheckedIn) {
-        const response = await axios.post(`https://hrms.dcstechnosis.com/api/checkin`, { employeeId }, config);
+        // 🚀 FIXED: Using Global API_BASE
+        const response = await axios.post(`${API_BASE}/checkin`, { employeeId }, config);
         if (response.data.success || response.status === 201) {
             Alert.alert("Success", "Punched In Successfully!");
             fetchDashboardData(); 
         }
       } else {
-        const response = await axios.post(`https://hrms.dcstechnosis.com/api/checkout`, { employeeId }, config);
+        // 🚀 FIXED: Using Global API_BASE
+        const response = await axios.post(`${API_BASE}/checkout`, { employeeId }, config);
         if (response.data.success || response.status === 200) {
             Alert.alert("Success", "Punched Out Successfully!");
             fetchDashboardData(); 
@@ -335,15 +337,6 @@ export default function EmployeeDashboard({ navigation }: any) {
       </SafeAreaView>
     );
   }
-
-  const chartW = width - 85; 
-  const chartH = 120;
-  const points = chartData.map((point, i) => {
-     const leftPos = chartData.length === 1 ? chartW / 2 : (i / (chartData.length - 1)) * chartW;
-     const cappedHours = Math.min(Math.max(point.hours, 0), 10);
-     const topPos = chartH - ((cappedHours / 10) * chartH); 
-     return { x: leftPos, y: topPos };
-  });
 
   return (
     <SafeAreaView style={styles.container}>
@@ -474,80 +467,12 @@ export default function EmployeeDashboard({ navigation }: any) {
                 <LeaveCard type="Earned" used={earnedUsed} left={earnedLeft} color="#10B981" icon="check-decagram-outline" colors={colors} styles={styles} />
               </ScrollView>
             </View>
-
-            {/* --- WORKING HOURS CHART COMMENTED OUT ---
-            <View style={styles.workingHoursCard}>
-              <Text style={styles.sectionTitle}>📈 My Working Hours</Text>
-              <Text style={styles.cardSubtitle}>This month — daily hours logged</Text>
-              
-              <View style={styles.chartContainer}>
-                <View style={styles.yAxis}>
-                  {[10, 8, 6, 4, 2, 0].map(val => <Text key={val} style={styles.yAxisLabel}>{val}</Text>)}
-                </View>
-                <View style={styles.chartArea}>
-                  <View style={styles.gridLinesContainer}>
-                    {[1, 2, 3, 4, 5, 6].map(v => <View key={v} style={[styles.gridLine, { borderColor: colors.border }]} />)}
-                  </View>
-                  
-                  <View style={[styles.dataLineContainer, { height: '100%', top: 0 }]}>
-                    {chartData.length > 0 ? (
-                      <>
-                        {points.map((p, i) => {
-                            if (i === 0) return null;
-                            const prev = points[i - 1];
-                            const dx = p.x - prev.x;
-                            const dy = p.y - prev.y;
-                            const length = Math.sqrt(dx * dx + dy * dy);
-                            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-                            const cx = (prev.x + p.x) / 2;
-                            const cy = (prev.y + p.y) / 2;
-
-                            return (
-                                <View key={`line-${i}`} style={{
-                                    position: 'absolute',
-                                    left: cx - (length / 2),
-                                    top: cy - 1, 
-                                    width: length,
-                                    height: 2,
-                                    backgroundColor: '#10B981',
-                                    transform: [{ rotate: `${angle}deg` }],
-                                    zIndex: 1
-                                }} />
-                            );
-                        })}
-
-                        {points.map((p, i) => (
-                            <View key={`dot-${i}`} style={[styles.dataDot, {
-                                position: 'absolute',
-                                left: p.x - 4, 
-                                top: p.y - 4,
-                                zIndex: 2
-                            }]} />
-                        ))}
-                      </>
-                    ) : (
-                       <Text style={{textAlign: 'center', marginTop: 40, color: colors.textSub, fontSize: 11}}>No attendance data found.</Text>
-                    )}
-                  </View>
-
-                </View>
-              </View>
-              <View style={[styles.xAxis, { paddingLeft: 20, marginTop: 8 }]}>
-                 {chartData.map((point, i) => (
-                     <Text key={i} style={[styles.xAxisLabel, {flex: 1, textAlign: i === 0 ? 'left' : (i === chartData.length - 1 ? 'right' : 'center')}]}>
-                        {point.label}
-                     </Text>
-                 ))}
-              </View>
-            </View>
-            */}
           </>
         )}
 
         <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>📢 Announcements</Text>
         </View>
-        {/* 🚀 MODIFIED: Increased maxHeight to 400 for better professional UI (shows 3-4 items) */}
         <ScrollView style={[styles.announcementList, { maxHeight: 400 }]} nestedScrollEnabled={true} showsVerticalScrollIndicator={true}>
             {filteredAnnouncements.length > 0 ? (
               filteredAnnouncements.map((ann, idx) => (
@@ -603,16 +528,12 @@ const QuickLink = ({ icon, label, color, onPress, colors, styles }: any) => (
   </TouchableOpacity>
 );
 
-// 🚀 MODIFIED AnnouncementItem component to match the styling and data structure
-// 🚀 MODIFIED AnnouncementItem component to show Priority along with Type & Pinned
 const AnnouncementItem = ({ ann, colors, styles}: any) => {
-    // Type Colors
     const isGeneral = ann.type?.toLowerCase() === 'general';
     const isHoliday = ann.type?.toLowerCase() === 'holiday';
     const tagBg = isGeneral ? '#dbeafe' : (isHoliday ? '#dcfce7' : '#fef3c7');
     const tagColor = isGeneral ? '#2563eb' : (isHoliday ? '#16a34a' : '#d97706');
 
-    // Priority Colors (NEW)
     const p = (ann.priority || '').toLowerCase();
     let prioBg = '#f1f5f9';
     let prioColor = '#64748b';
@@ -624,18 +545,15 @@ const AnnouncementItem = ({ ann, colors, styles}: any) => {
     return (
       <View style={[styles.announcementCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
           <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap'}}>
-              {/* PINNED TAG */}
               {ann.isPinned && (
                   <View style={{backgroundColor: '#fef3c7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6, marginBottom: 4, flexDirection: 'row', alignItems: 'center'}}>
                       <Feather name="paperclip" size={10} color="#d97706" style={{marginRight: 3}} />
                       <Text style={{color: '#d97706', fontSize: 10, fontWeight: 'bold'}}>PINNED</Text>
                   </View>
               )}
-              {/* TYPE TAG */}
               <View style={{backgroundColor: tagBg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginRight: 6, marginBottom: 4}}>
                   <Text style={{color: tagColor, fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase'}}>{ann.type || 'GENERAL'}</Text>
               </View>
-              {/* PRIORITY TAG (NEW) */}
               {ann.priority && (
                   <View style={{backgroundColor: prioBg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginBottom: 4}}>
                       <Text style={{color: prioColor, fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase'}}>{ann.priority}</Text>
@@ -648,6 +566,7 @@ const AnnouncementItem = ({ ann, colors, styles}: any) => {
       </View>
     );
 };
+
 const getDynamicStyles = (colors: any, isLight: boolean) => StyleSheet.create({
   container: { 
       flex: 1, 
@@ -660,7 +579,6 @@ const getDynamicStyles = (colors: any, isLight: boolean) => StyleSheet.create({
   navDate: { fontSize: 13, color: colors.textSub, marginTop: 2, marginLeft: 32 },
   liveClockBox: { alignItems: 'flex-end', backgroundColor: colors.primary + '20', padding: 8, borderRadius: 12 },
   liveTimeText: { fontSize: 13, fontWeight: '800', color: colors.primary },
-  istLabel: { fontSize: 9, color: colors.primary, fontWeight: '600', opacity: 0.7 },
   greetingBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: isLight ? '#E0F2F1' : '#064E3B20', padding: 16, borderRadius: 16, marginBottom: 25, borderWidth: 1, borderColor: isLight ? '#B2DFDB' : '#065F46' },
   avatarLarge: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#B2DFDB', justifyContent: 'center', alignItems: 'center' },
   avatarText: { fontWeight: '800', color: '#00695C' },
@@ -686,42 +604,23 @@ const getDynamicStyles = (colors: any, isLight: boolean) => StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.textMain },
   viewAllLink: { fontSize: 12, fontWeight: '700', color: colors.primary },
-  
   leaveGridContainer: { marginBottom: 25 },
   leaveGrid: { flexDirection: 'row', paddingRight: 10 },
   leaveCard: { width: (width - 48) / 2.2, padding: 16, borderRadius: 16, borderWidth: 1, justifyContent: 'space-between', marginRight: 12 },
-  
   leaveTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   iconBg: { padding: 6, borderRadius: 8, marginRight: 8 },
   leaveType: { fontSize: 12, fontWeight: '700' },
   leaveBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   leaveUsedText: { fontSize: 10, color: colors.textSub },
   leaveLeftText: { fontSize: 15, fontWeight: "900" },
-  workingHoursCard: { backgroundColor: colors.cardBg, borderRadius: 20, padding: 20, marginBottom: 25, borderWidth: 1, borderColor: colors.border },
-  cardSubtitle: { fontSize: 12, color: colors.textSub, marginBottom: 15 },
-  chartContainer: { flexDirection: 'row', height: 120 },
-  yAxis: { justifyContent: 'space-between', paddingVertical: 5, paddingRight: 8 },
-  yAxisLabel: { fontSize: 10, color: colors.textSub },
-  chartArea: { flex: 1, borderLeftWidth: 1, borderBottomWidth: 1, borderColor: colors.border, position: 'relative' },
-  gridLinesContainer: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'space-between', paddingVertical: 5 },
-  gridLine: { height: 1, borderBottomWidth: 1 },
-  dataLineContainer: { position: 'absolute', left: 0, right: 0 },
-  dataDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' },
-  xAxis: { flexDirection: 'row', justifyContent: 'space-between', paddingLeft: 22, marginTop: 8 },
-  xAxisLabel: { fontSize: 9, color: colors.textSub },
-  announcementList: { marginBottom: 10 },
-  
-  // 🚀 MODIFIED: Announcement styling update
   announcementCard: { padding: 16, borderRadius: 12, borderWidth: 1, marginBottom: 12 },
   annTitle: { fontSize: 15, fontWeight: '700', marginBottom: 4 },
   annDesc: { fontSize: 13, marginBottom: 8, lineHeight: 18 },
   annDate: { fontSize: 11, color: '#94a3b8' },
-  
   quickLinksGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   quickLinkItem: { width: '48%', padding: 12, borderRadius: 16, flexDirection: 'row', alignItems: 'center', marginBottom: 12, borderWidth: 1 },
   quickIconCircle: { width: 38, height: 38, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
   quickLinkLabel: { marginLeft: 10, fontSize: 12, fontWeight: '700' },
-  
   manualRefreshBtn: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: colors.primary + '15' },
   manualRefreshText: { fontSize: 11, fontWeight: '700', marginLeft: 4 },
 });

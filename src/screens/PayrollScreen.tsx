@@ -7,8 +7,8 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 export default function PayrollScreen({ navigation }: any) {

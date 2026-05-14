@@ -11,8 +11,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import axios from 'axios';
 import { useTheme } from '../constants/theme';
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api';
 const STATUS_OPTIONS = ['Pending', 'Success', 'Lost']; 
 
 export default function LeadsScreen({ navigation }: any) {

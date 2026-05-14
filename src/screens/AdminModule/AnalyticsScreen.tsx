@@ -6,9 +6,10 @@ import { PieChart } from 'react-native-chart-kit';
 import Feather from 'react-native-vector-icons/Feather';
 import GlobalAppBar from '../../components/GlobalAppBar';
 import { useTheme } from '../../constants/theme'; 
+import { API_BASE } from '../../api/api';
 
 const { width } = Dimensions.get('window');
-const API_BASE = 'https://hrms.dcstechnosis.com/api';
+
 
 const AnalyticsScreen = ({ navigation }: any) => {
   const { colors, isLightMode } = useTheme(); 

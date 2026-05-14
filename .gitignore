@@ -29,6 +29,10 @@ node_modules/
 android/build/
 android/.gradle/
 android/app/build/
+<<<<<<< HEAD
+=======
+android/app/.cxx/
+>>>>>>> 3ad8db5 (Reconnected project)
 ios/build/
 *.bundle
 *.log

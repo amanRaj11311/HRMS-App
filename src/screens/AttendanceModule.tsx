@@ -18,7 +18,7 @@ import {showLocalNotification} from '../services/notificationService';
 import Geolocation from 'react-native-geolocation-service';
 import ImagePicker from 'react-native-image-crop-picker';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
+import { API_BASE } from '../api/api';
 const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const FULL_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

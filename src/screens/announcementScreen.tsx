@@ -9,8 +9,9 @@ import Feather from 'react-native-vector-icons/Feather';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
 import {showLocalNotification} from '../services/notificationService';
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
+
 
 const TYPES = ['general', 'holiday', 'policy', 'urgent', 'celebration'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];

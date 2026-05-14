@@ -8,9 +8,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios'; 
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
+import { API_BASE } from '../api/api';
 
 const { width } = Dimensions.get("window");
-const API_BASE = 'https://hrms.dcstechnosis.com/api';
+
 
 export default function UnifiedDashboard({ navigation }: any) {
   const { colors, isLightMode } = useTheme(); 

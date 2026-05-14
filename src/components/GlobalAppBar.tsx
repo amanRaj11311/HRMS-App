@@ -4,6 +4,8 @@ import Feather from 'react-native-vector-icons/Feather';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../constants/theme';
 import { useFocusEffect } from '@react-navigation/native'; 
+// 🚀 FIXED: Imported the centralized Base API URL to maintain system DRY standards
+import { API_BASE } from '../api/api';
 
 // 🚀 FIXED: Encodes spaces so image loads flawlessly everywhere
 const getCleanAvatarUrl = (url: string) => {
@@ -11,7 +13,8 @@ const getCleanAvatarUrl = (url: string) => {
     let clean = url.replace(/\\/g, '/'); 
     let fullUrl = clean;
     if (!clean.startsWith('http')) {
-        fullUrl = clean.startsWith('/') ? `https://hrms.dcstechnosis.com${clean}` : `https://hrms.dcstechnosis.com/${clean}`;
+        // 🚀 FIXED: Substituted hardcoded host string directly with API_BASE standard mapping
+        fullUrl = clean.startsWith('/') ? `${API_BASE.replace('/api', '')}${clean}` : `${API_BASE.replace('/api', '')}/${clean}`;
     }
     return encodeURI(fullUrl); 
 };
@@ -207,7 +210,7 @@ const styles = StyleSheet.create({
       height: 36, 
       borderRadius: 18, 
       backgroundColor: '#3b82f6', 
-      justifyContent: 'center', 
+      justify: 'center', 
       alignItems: 'center',
       overflow: 'hidden'
   },

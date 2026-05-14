@@ -23,8 +23,8 @@ import axios from 'axios';
 import { useTheme } from '../constants/theme';
 import { DrawerActions } from '@react-navigation/native'; 
 import GlobalAppBar from '../components/GlobalAppBar';
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api';
 
 // 🚀 100% SAFE DECODER - Ye kabhi infinite loop me nahi fasega
 const safeDecodeJWT = (token: string) => {

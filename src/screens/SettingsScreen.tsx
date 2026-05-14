@@ -11,8 +11,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
 import ImagePicker from 'react-native-image-crop-picker';
+// 🚀 FIXED: Retained the import of the centralized API configuration
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
+
 
 const safeDecodeJWT = (token: string) => {
   try {
@@ -40,7 +42,8 @@ const getCleanAvatarUrl = (url: string) => {
     let clean = url.replace(/\\/g, '/'); // Convert windows slashes to forward slashes
     let fullUrl = clean;
     if (!clean.startsWith('http')) {
-        fullUrl = clean.startsWith('/') ? `https://hrms.dcstechnosis.com${clean}` : `https://hrms.dcstechnosis.com/${clean}`;
+        // 🚀 FIXED: Substituted the absolute static domain origin with the dynamic API_BASE pointer mapping
+        fullUrl = clean.startsWith('/') ? `${API_BASE.replace('/api', '')}${clean}` : `${API_BASE.replace('/api', '')}/${clean}`;
     }
     return encodeURI(fullUrl); // This is the magic fix for spaces!
 };
@@ -184,11 +187,11 @@ export default function SettingsScreen({ navigation }: any) {
           }
 
           setProfileData({
-             firstName: finalFName,
-             lastName: finalLName,
-             email: finalEmail,
-             avatar: finalAvatar,
-             department: finalDept
+              firstName: finalFName,
+              lastName: finalLName,
+              email: finalEmail,
+              avatar: finalAvatar,
+              department: finalDept
           });
 
           setUserRole(finalRole);

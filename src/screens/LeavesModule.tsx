@@ -12,9 +12,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
 import {showLocalNotification} from '../services/notificationService';
+import { API_BASE } from '../api/api';
 
 const { width } = Dimensions.get("window");
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
+
 const TABS = ['All', 'Pending', 'Approved', 'Rejected'];
 const LEAVE_LIMITS = { casual: 12, sick: 8, earned: 15 };
 const LEAVE_TYPES = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Unpaid Leave'];

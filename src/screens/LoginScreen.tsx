@@ -3,6 +3,8 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, StatusBar, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Dimensions, Animated, Easing } from "react-native";
 import Feather from 'react-native-vector-icons/Feather';
+// 🚀 FIXED: Imported the centralized Base API URL to maintain system DRY standards
+import { API_BASE } from '../api/api';
 
 const { width: screenWidth } = Dimensions.get('window');
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
@@ -37,7 +39,8 @@ export default function LoginScreen({ navigation }: any) {
     Animated.timing(buttonWidth, { toValue: 56, duration: 300, useNativeDriver: false }).start();
 
     try {
-      const response = await axios.post("https://hrms.dcstechnosis.com/api/auth/login", { email: email.trim().toLowerCase(), password });
+      // 🚀 FIXED: Substituted the absolute static domain origin with the dynamic API_BASE mapping standard
+      const response = await axios.post(`${API_BASE}/auth/login`, { email: email.trim().toLowerCase(), password });
       const { token, user } = response.data;
       
       if (token && user) {

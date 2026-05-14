@@ -11,8 +11,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar'; 
+import { API_BASE } from '../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
 const CATEGORIES = ['laptop', 'desktop', 'monitor', 'keyboard', 'mouse', 'other (custom)'];
 const STATUSES = ['available', 'assigned', 'maintenance'];
 

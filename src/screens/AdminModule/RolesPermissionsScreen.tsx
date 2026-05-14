@@ -9,8 +9,8 @@ import Feather from 'react-native-vector-icons/Feather';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useTheme } from '../../constants/theme'; 
 import GlobalAppBar from '../../components/GlobalAppBar'; 
+import { API_BASE } from '../../api/api';
 
-const API_BASE = 'https://hrms.dcstechnosis.com/api'; 
 
 interface Permission {
   _id: string;
