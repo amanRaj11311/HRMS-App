@@ -13,7 +13,6 @@ import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
 
 
-
 export default function SalaryScreen({ navigation }: any) {
   const { colors, isLightMode } = useTheme(); 
   const [loading, setLoading] = useState(true);

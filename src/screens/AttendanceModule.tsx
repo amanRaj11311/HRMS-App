@@ -17,6 +17,8 @@ import {showLocalNotification} from '../services/notificationService';
 
 import Geolocation from 'react-native-geolocation-service';
 import ImagePicker from 'react-native-image-crop-picker';
+import { API_BASE } from '../api/api';
+
 
 import { API_BASE } from '../api/api';
 const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday'];

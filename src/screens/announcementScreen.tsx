@@ -12,7 +12,6 @@ import {showLocalNotification} from '../services/notificationService';
 import { API_BASE } from '../api/api';
 
 
-
 const TYPES = ['general', 'holiday', 'policy', 'urgent', 'celebration'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const AUDIENCES = ['all', 'admin', 'hr', 'employee'];

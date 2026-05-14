@@ -13,6 +13,7 @@
     "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^1.23.1",
     "@react-native-community/datetimepicker": "^9.1.0",
+    "@react-native/gradle-plugin": "^0.84.1",
     "@react-native/new-app-screen": "0.84.1",
     "@react-navigation/drawer": "^7.9.4",
     "@react-navigation/native": "^7.1.33",
@@ -21,6 +22,7 @@
     "axios": "^1.13.6",
     "react": "19.2.3",
     "react-native": "0.84.1",
+    "react-native-blob-util": "^0.24.7",
     "react-native-chart-kit": "^6.12.0",
     "react-native-fs": "^2.20.0",
     "react-native-geolocation-service": "^5.3.1",
@@ -35,9 +37,7 @@
     "react-native-share": "^12.2.6",
     "react-native-svg": "^15.15.4",
     "react-native-vector-icons": "^10.3.0",
-    "react-native-worklets": "^0.7.4",
-    "react-native-worklets-core": "^1.6.3",
-    "rn-fetch-blob": "^0.12.0"
+    "react-native-worklets": "^0.8.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

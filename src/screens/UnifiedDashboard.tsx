@@ -9,7 +9,6 @@ import axios from 'axios';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
-
 const { width } = Dimensions.get("window");
 
 
