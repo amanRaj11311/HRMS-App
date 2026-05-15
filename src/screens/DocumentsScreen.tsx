@@ -20,7 +20,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
-import DocumentPicker from 'react-native-document-picker'; 
+import * as DocumentPicker from '@react-native-documents/picker';
 import { useTheme } from '../constants/theme';
 import { DrawerActions } from '@react-navigation/native'; 
 import GlobalAppBar from '../components/GlobalAppBar';
@@ -186,15 +186,20 @@ export default function DocumentsScreen({ navigation }: any) {
     setRefreshing(true);
     fetchDocuments(true);
   };
-
-  const handlePickFile = async () => {
+const handlePickFile = async () => {
     try {
       const res = await DocumentPicker.pick({
         type: [DocumentPicker.types.images, DocumentPicker.types.pdf],
       });
+      
       if (res && res.length > 0) {
-        setSelectedFile(res[0]);
-        setDocForm({...docForm, url: res[0].name || 'File Selected'}); 
+        const file = res[0];
+        setSelectedFile({
+          uri: file.uri,
+          type: file.type || 'application/pdf',
+          name: file.name || 'document.pdf'
+        });
+        setDocForm({...docForm, url: file.name || 'File Selected'}); 
       }
     } catch (err) {
       if (!DocumentPicker.isCancel(err)) {
@@ -202,7 +207,6 @@ export default function DocumentsScreen({ navigation }: any) {
       }
     }
   };
-
   const handleSaveDocument = async () => {
     if (!docForm.name || (!selectedFile && !docForm.url)) {
       Alert.alert("Required", "Please provide Document Name and select a file or paste URL (*)");
