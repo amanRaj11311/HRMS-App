@@ -11,7 +11,6 @@ import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
 const { width } = Dimensions.get("window");
 
-
 export default function UnifiedDashboard({ navigation }: any) {
   const { colors, isLightMode } = useTheme(); 
   
@@ -72,7 +71,7 @@ export default function UnifiedDashboard({ navigation }: any) {
       if (name) setUserName(name);
       setPermissions(parsedPerms);
       
-      fetchData(hasAdminRights);
+      await fetchData(hasAdminRights);
   };
 
   const getSafeDateString = (d: Date) => {
@@ -96,12 +95,12 @@ export default function UnifiedDashboard({ navigation }: any) {
 
       let activities: any[] = [];
       if (sortedAnn.length > 0) {
-          activities.push({ icon: 'bullhorn', color: '#3B82F6', title: 'New Announcement', desc: sortedAnn[0].title });
+          activities.push({
+              icon: 'bullhorn', color: '#3B82F6', title: 'New Announcement', desc: sortedAnn[0].title
+          });
       }
+      setRecentActivities(activities);
 
-      // --------------------------------------------------------------------------------------
-      // 🚀 FIXED: Exact Same Logic as AttendanceModule.tsx (8 Hours, 9:20 PM Late, 2 Sec rule)
-      // --------------------------------------------------------------------------------------
       const myAttRes = await axios.get(`${API_BASE}/attendance?employeeId=${empId}&limit=500&_t=${ts}`, config).catch(() => null);
       const myAttData = Array.isArray(myAttRes?.data?.data) ? myAttRes.data.data : [];
       
@@ -112,12 +111,8 @@ export default function UnifiedDashboard({ navigation }: any) {
         if (updated.checkIn?.time && updated.checkOut?.time) {
             const inMs = new Date(updated.checkIn.time).getTime();
             const outMs = new Date(updated.checkOut.time).getTime();
-            
-            // Exact 2000ms rule
             if (Math.abs(outMs - inMs) <= 2000) {
-                updated.checkOut.time = null;
-                updated.workingHours = null;
-                hasValidCheckOut = false; 
+                updated.checkOut.time = null; updated.workingHours = null; hasValidCheckOut = false; 
             }
         } else if (!updated.checkOut?.time) {
             hasValidCheckOut = false;
@@ -127,23 +122,16 @@ export default function UnifiedDashboard({ navigation }: any) {
             const punchIn = new Date(updated.checkIn.time);
             const hour = punchIn.getHours();
             const min = punchIn.getMinutes();
-            
-            // Exact 9:20 late rule
             const isLate = (hour > 9 || (hour === 9 && min > 15));
 
-            // Exact < 8 Hours Half-Day Logic
             if (hasValidCheckOut && updated.workingHours !== null && updated.workingHours !== undefined) {
                 const hours = parseFloat(updated.workingHours);
-                if (!isNaN(hours) && hours < 4) {
-                    updated.status = 'half-day';
-                } else {
-                    updated.status = isLate ? 'late' : 'present';
-                }
+                if (!isNaN(hours) && hours < 4) updated.status = 'half-day';
+                else updated.status = isLate ? 'late' : 'present';
             } else {
                 updated.status = isLate ? 'late' : 'present';
             }
         }
-
         return updated;
       });
 
@@ -187,9 +175,7 @@ export default function UnifiedDashboard({ navigation }: any) {
               else if(status === 'wfh' || status === 'remote' || status === 'work-from-home') w++;
               else if(status === 'absent') a++;
           } else {
-              if (loopDate.getDay() !== 0) { 
-                  a++;
-              }
+              if (loopDate.getDay() !== 0) a++;
           }
       }
       
@@ -198,7 +184,6 @@ export default function UnifiedDashboard({ navigation }: any) {
       const todayStr = now.toDateString();
       let todayRec = mappedAttData.find((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
       setTodayRecord(todayRec);
-      // --------------------------------------------------------------------------------------
 
       if (isAdminUser) {
           const [empRes, allAttRes, leaveRes] = await Promise.all([
@@ -213,7 +198,6 @@ export default function UnifiedDashboard({ navigation }: any) {
           
           const allAtt = Array.isArray(allAttRes?.data?.data?.data) ? allAttRes.data.data.data : (Array.isArray(allAttRes?.data?.data) ? allAttRes.data.data : []);
           const presentToday = allAtt.filter((att: any) => {
-              // Apply exact logic for today's present count globally for admin stats
               if (new Date(att.date || att.checkIn?.time).toDateString() !== todayStr) return false;
               let status = (att.status || '').toLowerCase();
               if (att.checkIn?.time) {
@@ -229,11 +213,8 @@ export default function UnifiedDashboard({ navigation }: any) {
 
                   if (validOut && att.workingHours !== null && att.workingHours !== undefined) {
                       const hours = parseFloat(att.workingHours);
-                      if (!isNaN(hours) && hours < 8) {
-                          status = 'half-day';
-                      } else {
-                          status = isLate ? 'late' : 'present';
-                      }
+                      if (!isNaN(hours) && hours < 8) status = 'half-day';
+                      else status = isLate ? 'late' : 'present';
                   } else {
                       status = isLate ? 'late' : 'present';
                   }
@@ -261,7 +242,7 @@ export default function UnifiedDashboard({ navigation }: any) {
                       setLoading(true);
                       const token = await AsyncStorage.getItem('userToken');
                       await axios.put(`${API_BASE}/leaves/${leaveId}`, { status: newStatus }, { headers: { Authorization: `Bearer ${token}` } });
-                      fetchData(isPrivileged, true); 
+                      initDashboard(); 
                   } catch (err: any) {
                       Alert.alert("Error", err.response?.data?.message || "Failed to update leave.");
                   } finally { setLoading(false); }
@@ -322,6 +303,33 @@ export default function UnifiedDashboard({ navigation }: any) {
       </View>
   );
 
+  // 🚀 FIXED: Proper Promise-based sync ensuring complete data refresh
+  const syncBiometricAndRefresh = async () => {
+    setRefreshing(true);
+    try {
+        const token = await AsyncStorage.getItem('userToken');
+        const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
+        
+        await axios.get(syncUrl, { 
+            headers: { 
+                Authorization: `Bearer ${token}`,
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            } 
+        }).catch((e) => console.log('Ping failed, continuing:', e));
+
+    } catch (error) {
+       console.log('Error during biometric sync refresh', error);
+    }
+
+    // 🚀 Wait exactly 3 seconds properly before fetching
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // 🚀 Call initDashboard instead of fetchData to ensure all states are absolutely fresh
+    await initDashboard(); 
+  };
+
   return (
     <SafeAreaView style={[styles.container, {backgroundColor: colors.background}]}>
       <StatusBar barStyle={isLightMode ? "dark-content" : "light-content"} backgroundColor="transparent" translucent />
@@ -329,8 +337,10 @@ export default function UnifiedDashboard({ navigation }: any) {
          <GlobalAppBar navigation={navigation} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchData(isPrivileged, true)} />}>
-        
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent} 
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={syncBiometricAndRefresh} />}
+      >
         <View style={styles.headerRow}>
           <View><Text style={[styles.dashboardTitle, {color: colors.textMain}]}>Dashboard</Text><Text style={styles.navDate}>{currentDate}</Text></View>
           <View style={[styles.liveClockBox, {backgroundColor: isLightMode ? '#3B82F615' : 'rgba(59, 130, 246, 0.2)'}]}><Text style={styles.liveTimeText}>{liveTime}</Text></View>

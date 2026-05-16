@@ -1,1 +1,1 @@
-export const API_BASE = 'https://uat.hrms.dcstechnosis.com/api';
+export const API_BASE = 'https://hrms.dcstechnosis.com/api';
