@@ -18,15 +18,13 @@ import {showLocalNotification} from '../services/notificationService';
 import Geolocation from 'react-native-geolocation-service';
 import ImagePicker from 'react-native-image-crop-picker';
 import { API_BASE } from '../api/api';
+
 const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const FULL_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 const OFFICE_COORDS = { latitude: 26.875690, longitude: 75.753272 }; 
 const ALLOWED_RADIUS_METERS = 15; 
-
-const FACE_API_KEY = "YOUR_FACEPLUSPLUS_API_KEY"; 
-const FACE_API_SECRET = "YOUR_FACEPLUSPLUS_API_SECRET";
 
 export default function AttendanceModule({ navigation }: any) {
   const { colors, isLightMode } = useTheme();
@@ -62,7 +60,6 @@ export default function AttendanceModule({ navigation }: any) {
   
   const [formAbsentEmployees, setFormAbsentEmployees] = useState<any[]>([]);
 
-  // 🚀 FIXED: Advanced Download Filters State
   const [isDownloadModalVisible, setIsDownloadModalVisible] = useState(false);
   const [dlStartDate, setDlStartDate] = useState<Date>(new Date());
   const [dlEndDate, setDlEndDate] = useState<Date>(new Date());
@@ -165,6 +162,16 @@ export default function AttendanceModule({ navigation }: any) {
 
   const initScreen = async () => {
     setLoading(true);
+    
+    // 🚀 FIXED: Screen khulte hi silent biometric sync
+    try {
+        const token = await AsyncStorage.getItem('userToken');
+        await axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
+            headers: { Authorization: `Bearer ${token}` } 
+        });
+        await new Promise(res => setTimeout(res, 2000));
+    } catch (e) {}
+
     const permsStr = await AsyncStorage.getItem('userPermissions');
     const userNameStr = await AsyncStorage.getItem('userName'); 
     const pArray = permsStr ? JSON.parse(permsStr) : [];
@@ -209,7 +216,29 @@ export default function AttendanceModule({ navigation }: any) {
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = res.data?.data || [];
 
-      const mapped = data.map((item: any) => {
+      // 🚀 FIXED: DEDUPLICATION LOGIC HERE
+      const uniqueRecordsMap = new Map();
+
+      data.forEach((item: any) => {
+          const empId = item.employeeId?._id || item.employeeId;
+          const dObj = new Date(item.date || item.checkIn?.time);
+          if (isNaN(dObj.getTime())) return;
+
+          const dateKey = `${empId}_${dObj.getFullYear()}-${dObj.getMonth()}-${dObj.getDate()}`;
+
+          if (uniqueRecordsMap.has(dateKey)) {
+              const existing = uniqueRecordsMap.get(dateKey);
+              if (item.checkIn?.time && !existing.checkIn?.time) {
+                  uniqueRecordsMap.set(dateKey, item);
+              }
+          } else {
+              uniqueRecordsMap.set(dateKey, item);
+          }
+      });
+
+      const deduplicatedData = Array.from(uniqueRecordsMap.values());
+
+      const mapped = deduplicatedData.map((item: any) => {
         let updated = { ...item };
         let hasValidCheckOut = true;
 
@@ -233,7 +262,6 @@ export default function AttendanceModule({ navigation }: any) {
             
             const isLate = (hour > 9 || (hour === 9 && min > 15));
 
-            // < 8 Hours Half-Day Logic
             if (hasValidCheckOut && updated.workingHours !== null && updated.workingHours !== undefined) {
                 const hours = parseFloat(updated.workingHours);
                 if (!isNaN(hours) && hours < 4) {
@@ -250,18 +278,27 @@ export default function AttendanceModule({ navigation }: any) {
       });
 
       setRecords(mapped);
-    } catch (e) {}
-    finally { setLoading(false); setRefreshing(false); }
+    } catch (e: any) {
+        // 🚀 FIXED: Token Expire Logic added
+        if (e.response && (e.response.status === 401 || e.response.status === 403)) {
+            Alert.alert("Session Expired", "Token expired plz login again.", [
+                { text: "OK", onPress: async () => {
+                    await AsyncStorage.clear();
+                    navigation.replace('Login');
+                }}
+            ]);
+        }
+    } finally { 
+        setLoading(false); setRefreshing(false); 
+    }
   };
 
-  // 🚀 FIXED: Biometric Sync Logic (Cleaned up, user-friendly, and usable on pull-to-refresh)
   const syncBiometric = async (silent = false) => {
     if (!silent) setIsSyncing(true);
     try {
         const token = await AsyncStorage.getItem('userToken');
         const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
         
-        // Silently hit the backend to force sync
         await axios.get(syncUrl, { 
             headers: { 
                 Authorization: `Bearer ${token}`,
@@ -271,7 +308,6 @@ export default function AttendanceModule({ navigation }: any) {
             } 
         }).catch(() => {});
 
-        // Return a promise that resolves after the 3 second DB population delay
         return new Promise((resolve) => {
             setTimeout(async () => {
                await fetchData(true);
@@ -291,137 +327,12 @@ export default function AttendanceModule({ navigation }: any) {
     }
   };
 
-  // 🚀 FIXED: Pull-to-refresh now silently triggers Biometric Sync!
   const handleRefresh = async () => {
     setRefreshing(true);
     await syncBiometric(true); 
     setRefreshing(false);
   };
 
-  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-      const toRad = (value: number) => (value * Math.PI) / 180;
-      const R = 6371e3; 
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-  };
-
-  const handleSmartPunch = async () => {
-  try {
-    // 1️⃣ Permissions
-    if (Platform.OS === 'android') {
-      const granted = await PermissionsAndroid.requestMultiple([
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        PermissionsAndroid.PERMISSIONS.CAMERA,
-      ]);
-
-      if (
-        granted['android.permission.ACCESS_FINE_LOCATION'] !== PermissionsAndroid.RESULTS.GRANTED ||
-        granted['android.permission.CAMERA'] !== PermissionsAndroid.RESULTS.GRANTED
-      ) {
-        Alert.alert("Permission Required", "Location & Camera required");
-        return;
-      }
-    }
-
-    setIsPunching(true);
-
-    // 2️⃣ Get Location
-    Geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-
-        // 3️⃣ Fake GPS Detection
-        if (position.mocked) {
-          setIsPunching(false);
-          Alert.alert("Fake GPS ❌", "Disable mock location");
-          return;
-        }
-
-        // 4️⃣ Distance Check
-        const distance = calculateDistance(
-          latitude,
-          longitude,
-          OFFICE_COORDS.latitude,
-          OFFICE_COORDS.longitude
-        );
-
-        if (distance > ALLOWED_RADIUS_METERS) {
-          setIsPunching(false);
-          Alert.alert("Out of Office 🚫", `You are ${Math.round(distance)}m away`);
-          return;
-        }
-
-        // 5️⃣ Open Camera
-        ImagePicker.openCamera({
-          width: 400,
-          height: 400,
-          cropping: true,
-          includeBase64: true,
-          useFrontCamera: true,
-        })
-          .then(async (image) => {
-
-            // 6️⃣ Show preview confirmation
-            Alert.alert(
-              "Confirm Attendance",
-              "Do you want to submit this photo?",
-              [
-                { text: "Cancel", style: "cancel", onPress: () => setIsPunching(false) },
-                {
-                  text: "Submit",
-                  onPress: async () => {
-
-                    // 7️⃣ Prepare payload for backend
-                    const payload = {
-                      employeeId: await AsyncStorage.getItem('employeeId'),
-                      latitude,
-                      longitude,
-                      imageBase64: image.data,
-                      timestamp: new Date().toISOString(),
-                    };
-
-                    console.log("Attendance Payload 👉", payload);
-
-                    // 🔥 FUTURE BACKEND API
-                    // await axios.post('/attendance/face', payload)
-
-                    Alert.alert(
-                      "Captured ✅",
-                      "Photo & location captured.\nWaiting for backend verification."
-                    );
-
-                    setIsPunching(false);
-                  },
-                },
-              ]
-            );
-          })
-          .catch(() => {
-            setIsPunching(false);
-          });
-      },
-      (error) => {
-        setIsPunching(false);
-        Alert.alert("Location Error", "Enable High Accuracy GPS");
-      },
-     {
-  enableHighAccuracy: true,
-  timeout: 15000,
-  maximumAge: 0,
-  distanceFilter: 0,
-  forceRequestLocation: true,
-  showLocationDialog: true
-}
-    );
-  } catch (error) {
-    setIsPunching(false);
-  }
-};
   const escapeXml = (unsafe: string) => {
       return (unsafe || '').toString().replace(/[<>&'"]/g, function (c) {
           switch (c) {
@@ -432,7 +343,6 @@ export default function AttendanceModule({ navigation }: any) {
       });
   };
 
-  // 🚀 FIXED: Advanced Filtering for Download Report (Dates & Employees)
   const handleDownloadReport = async () => {
     try {
       setIsDownloading(true);
@@ -490,7 +400,15 @@ export default function AttendanceModule({ navigation }: any) {
               empRecords.forEach((r: any) => {
                   const d = new Date(r.date || r.checkIn?.time);
                   const dateKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-                  monthlyRecordsMap.set(dateKey, r);
+                  
+                  if (monthlyRecordsMap.has(dateKey)) {
+                      const existing = monthlyRecordsMap.get(dateKey);
+                      if (r.checkIn?.time && !existing.checkIn?.time) {
+                          monthlyRecordsMap.set(dateKey, r);
+                      }
+                  } else {
+                      monthlyRecordsMap.set(dateKey, r);
+                  }
               });
 
               excelContent += `<Worksheet ss:Name="${escapeXml(uniqueSheetName)}">\n<Table>\n`;
@@ -510,8 +428,19 @@ export default function AttendanceModule({ navigation }: any) {
                       checkOut = formatTimeUI(rec.checkOut);
                       hrs = rec.workingHours ? parseFloat(rec.workingHours).toFixed(2) : '0';
                   } else {
-                      const isSunday = loopDate.getDay() === 0;
-                      status = isSunday ? 'week-off' : 'absent';
+                      const dayOfWeek = loopDate.getDay();
+                      let isWeekOff = false;
+                      
+                      if (dayOfWeek === 0) {
+                          isWeekOff = true;
+                      } else if (dayOfWeek === 6) {
+                          const cutoffDate = new Date(2026, 5, 8);
+                          if (loopDate > cutoffDate) {
+                              isWeekOff = true;
+                          }
+                      }
+                      
+                      status = isWeekOff ? 'week-off' : 'absent';
                       checkIn = "--:-- --";
                       checkOut = "--:-- --";
                       hrs = "0";
@@ -666,14 +595,32 @@ export default function AttendanceModule({ navigation }: any) {
           return getSafeDateString(d) === targetDateStr;
       });
 
-      if (filterDate.getDay() !== 0) { 
-          const punchedIds = baseDateRecords.map(r => r.employeeId?._id || r.employeeId);
-          const absentEmps = allEmployees.filter(e => !punchedIds.includes(e._id)).map(e => ({
-              _id: `absent-${e._id}`, employeeId: e, status: 'absent', date: filterDate, checkIn: null, checkOut: null
-          }));
-          absentCountForSelectedDate = absentEmps.length;
-          baseDateRecords = [...baseDateRecords, ...absentEmps];
+      const targetDateObj = new Date(filterDate);
+      const dayOfWeek = targetDateObj.getDay();
+      let isWeekOff = false;
+      
+      if (dayOfWeek === 0) {
+          isWeekOff = true;
+      } else if (dayOfWeek === 6) {
+          const cutoffDate = new Date(2026, 5, 8);
+          if (targetDateObj > cutoffDate) {
+              isWeekOff = true;
+          }
       }
+
+      const punchedIds = baseDateRecords.map(r => r.employeeId?._id || r.employeeId);
+      const absentEmps = allEmployees.filter(e => !punchedIds.includes(e._id)).map(e => ({
+          _id: `${isWeekOff ? 'weekoff' : 'absent'}-${e._id}`, 
+          employeeId: e, 
+          status: isWeekOff ? 'week-off' : 'absent', 
+          date: filterDate, 
+          checkIn: null, 
+          checkOut: null
+      }));
+      
+      absentCountForSelectedDate = isWeekOff ? 0 : absentEmps.length;
+      baseDateRecords = [...baseDateRecords, ...absentEmps];
+      
   } else {
       const targetMonth = filterDate.getMonth();
       const targetYear = filterDate.getFullYear();
@@ -712,17 +659,27 @@ export default function AttendanceModule({ navigation }: any) {
           
           if (monthlyMap.has(dStr)) {
               baseDateRecords.push(monthlyMap.get(dStr));
-          } else {
-              if (loopDate.getDay() !== 0) { 
-                  baseDateRecords.push({
-                      _id: `absent-self-${dStr}`, 
-                      employeeId: { userId: { firstName: myName.split(' ')[0] || '', lastName: myName.split(' ').slice(1).join(' ') || '' } }, 
-                      status: 'absent', 
-                      date: loopDate, 
-                      checkIn: null, 
-                      checkOut: null
-                  });
+         } else {
+              const dayOfWeek = loopDate.getDay();
+              let isWeekOff = false;
+              
+              if (dayOfWeek === 0) {
+                  isWeekOff = true;
+              } else if (dayOfWeek === 6) {
+                  const cutoffDate = new Date(2026, 5, 8); 
+                  if (loopDate > cutoffDate) {
+                      isWeekOff = true;
+                  }
               }
+              
+              baseDateRecords.push({
+                  _id: `${isWeekOff ? 'weekoff' : 'absent'}-self-${dStr}`, 
+                  employeeId: { userId: { firstName: myName.split(' ')[0] || '', lastName: myName.split(' ').slice(1).join(' ') || '' } }, 
+                  status: isWeekOff ? 'week-off' : 'absent', 
+                  date: loopDate, 
+                  checkIn: null, 
+                  checkOut: null
+              });
           }
       }
       
@@ -837,38 +794,6 @@ export default function AttendanceModule({ navigation }: any) {
             <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border}]} onPress={() => setShowStatusModal(true)}><Text style={[styles.filterText, {color: colors.textMain}]}>{filterStatus}</Text></TouchableOpacity>
         </View>
 
-      {/*  <TouchableOpacity
-  style={[
-    styles.smartPunchBtnNew,
-    isPunching && { opacity: 0.7 }
-  ]}
-  onPress={handleSmartPunch}
-  activeOpacity={0.9}
-  disabled={isPunching}
->
-  <View style={styles.punchContent}>
-    
-    <View style={styles.iconCircle}>
-      {isPunching ? (
-        <ActivityIndicator color="#fff" />
-      ) : (
-        <MaterialCommunityIcons name="face-recognition" size={26} color="#fff" />
-      )}
-    </View>
-
-    <View style={{ flex: 1 }}>
-      <Text style={styles.punchTitle}>
-        {isPunching ? "Processing..." : "Punch Attendance"}
-      </Text>
-      <Text style={styles.punchSubtitle}>
-        Face + GPS Verification Required
-      </Text>
-    </View>
-
-    <Feather name="arrow-right" size={22} color="#fff" />
-
-  </View>
-</TouchableOpacity> */}
         {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{marginTop: 50}}/> : displayRecords.map((item, index) => (
             <View key={index} style={[styles.attCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
                 <View style={styles.cardHeader}>
@@ -923,7 +848,6 @@ export default function AttendanceModule({ navigation }: any) {
           </TouchableOpacity>
       )}
 
-      {/* 🚀 FIXED: ADVANCED DATE & EMPLOYEE DOWNLOAD MODAL */}
       <Modal visible={isDownloadModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
             <View style={[styles.modalContent, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: 24, borderRadius: 20 }]}>
@@ -1024,7 +948,6 @@ export default function AttendanceModule({ navigation }: any) {
       <DropdownModal visible={showFormStatus} title="Select Status" data={STATUS_OPTIONS} onSelect={(v:any) => setFormData({...formData, status: v})} onClose={() => setShowFormStatus(false)} colors={colors} />
       <DropdownModal visible={showEmpModal} title="Select Employee" data={[{userId:{_id:'All', firstName:'All', lastName:'Employees'}}, ...allEmployees]} displayKey={(i:any) => `${i.userId?.firstName || ''} ${i.userId?.lastName || ''}`} onSelect={(v:any) => { setFilterEmpId(v._id || 'All'); setFilterEmpName(v.userId ? `${v.userId.firstName} ${v.userId.lastName}` : 'All Employees'); }} onClose={()=>setShowEmpModal(false)} colors={colors} />
       
-      {/* Reused DropdownModal for the Download Filter specific employee selection */}
       <DropdownModal visible={showDlEmpModal} title="Select Employee" data={[{userId:{_id:'All', firstName:'All', lastName:'Employees'}}, ...allEmployees]} displayKey={(i:any) => `${i.userId?.firstName || ''} ${i.userId?.lastName || ''}`} onSelect={(v:any) => { setDlEmpId(v._id || 'All'); setDlEmpName(v.userId ? `${v.userId.firstName} ${v.userId.lastName}` : 'All Employees'); }} onClose={()=>setShowDlEmpModal(false)} colors={colors} />
 
       <DropdownModal visible={showFormEmp} title="Select Absent Employee" 
@@ -1078,39 +1001,11 @@ const KpiCard = ({label, val, color, icon}: any) => (
 );
 
 const styles = StyleSheet.create({
-    smartPunchBtnNew: {
-  backgroundColor: '#6366F1',
-  padding: 16,
-  borderRadius: 16,
-  marginBottom: 16,
-  elevation: 3,
-},
-
-punchContent: {
-  flexDirection: 'row',
-  alignItems: 'center',
-},
-
-iconCircle: {
-  width: 45,
-  height: 45,
-  borderRadius: 22,
-  backgroundColor: 'rgba(255,255,255,0.2)',
-  justifyContent: 'center',
-  alignItems: 'center',
-  marginRight: 12,
-},
-
-punchTitle: {
-  color: '#fff',
-  fontSize: 16,
-  fontWeight: 'bold',
-},
-
-punchSubtitle: {
-  color: '#E0E7FF',
-  fontSize: 12,
-},
+  smartPunchBtnNew: { backgroundColor: '#6366F1', padding: 16, borderRadius: 16, marginBottom: 16, elevation: 3 },
+  punchContent: { flexDirection: 'row', alignItems: 'center' },
+  iconCircle: { width: 45, height: 45, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  punchTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  punchSubtitle: { color: '#E0E7FF', fontSize: 12 },
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 100 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
@@ -1137,9 +1032,7 @@ punchSubtitle: {
   timeInfo: { flex: 1 },
   timeLabel: { fontSize: 9, fontWeight: 'bold', color: '#94A3B8', marginBottom: 4 },
   timeValue: { fontSize: 12, fontWeight: '800' },
-  
   downloadFab: { position: 'absolute', bottom: 30, right: 20, width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { width: '90%', borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, maxHeight: '85%' },
   modalNav: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, alignItems: 'center' },

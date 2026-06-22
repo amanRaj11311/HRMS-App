@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, 
   StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl 
 } from "react-native";
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage'; 
 import axios from 'axios'; 
@@ -33,16 +34,35 @@ export default function UnifiedDashboard({ navigation }: any) {
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [monthlyStats, setMonthlyStats] = useState({ present: 0, late: 0, halfDay: 0, wfh: 0, absent: 0, total: 0 });
 
-  useEffect(() => {
-    const today = new Date();
-    setCurrentDate(today.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
-    
-    const timer = setInterval(() => {
-        setLiveTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
-    }, 1000);
-    initDashboard();
-    return () => clearInterval(timer);
-  }, []);
+  // 🚀 FIXED: Proper Promise-based sync ensuring complete data refresh
+  useFocusEffect(
+    React.useCallback(() => {
+      const today = new Date();
+      setCurrentDate(today.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
+      
+      const timer = setInterval(() => {
+          setLiveTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
+      }, 1000);
+      
+      autoSyncAndInit();
+      
+      return () => clearInterval(timer);
+    }, [])
+  );
+
+  const autoSyncAndInit = async () => {
+      try {
+          const token = await AsyncStorage.getItem('userToken');
+          // Silently trigger biometric device sync
+          await axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
+              headers: { Authorization: `Bearer ${token}` } 
+          });
+          // Wait 2 seconds for DB to update
+          await new Promise(res => setTimeout(res, 2000));
+      } catch (e) {} 
+      
+      initDashboard();
+  };
 
   const initDashboard = async () => {
       const role = await AsyncStorage.getItem('userRole'); 
@@ -174,8 +194,23 @@ export default function UnifiedDashboard({ navigation }: any) {
               else if(status === 'half-day' || status === 'halfday') h++;
               else if(status === 'wfh' || status === 'remote' || status === 'work-from-home') w++;
               else if(status === 'absent') a++;
-          } else {
-              if (loopDate.getDay() !== 0) a++;
+         } else {
+              const dayOfWeek = loopDate.getDay();
+              let isWeekOff = false;
+              
+              if (dayOfWeek === 0) {
+                  isWeekOff = true; // Sunday hamesha off hai
+              } else if (dayOfWeek === 6) {
+                  // Saturday tabhi off hai agar date 8 June 2026 ke baad ki ho
+                  const cutoffDate = new Date(2026, 5, 8); // Month 5 ka matlab June hota hai JS mein
+                  if (loopDate > cutoffDate) {
+                      isWeekOff = true;
+                  }
+              }
+
+              if (!isWeekOff) {
+                  a++; // Agar week-off nahi hai tabhi absent badhao
+              }
           }
       }
       
@@ -229,7 +264,20 @@ export default function UnifiedDashboard({ navigation }: any) {
           setRecentEmployees(allEmps.slice(0, 5)); 
           setPendingLeavesList(pLeaves.slice(0, 3)); 
       }
-    } catch (e) { console.log(e); } finally { setLoading(false); setRefreshing(false); }
+    } catch (e: any) { 
+        console.log(e);
+        // 🚀 FIXED: Token Expired Logic (Alert and Logout)
+        if (e.response && (e.response.status === 401 || e.response.status === 403)) {
+            Alert.alert("Session Expired", "Token expired plz login again.", [
+                { text: "OK", onPress: async () => {
+                    await AsyncStorage.clear();
+                    navigation.replace('Login');
+                }}
+            ]);
+        }
+    } finally { 
+        setLoading(false); setRefreshing(false); 
+    }
   };
 
   const updateLeaveStatus = async (leaveId: string, newStatus: string) => {
@@ -303,10 +351,9 @@ export default function UnifiedDashboard({ navigation }: any) {
       </View>
   );
 
-  // 🚀 FIXED: Proper Promise-based sync ensuring complete data refresh
   const syncBiometricAndRefresh = async () => {
-    setRefreshing(true);
     try {
+        setRefreshing(true);
         const token = await AsyncStorage.getItem('userToken');
         const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
         
@@ -323,10 +370,7 @@ export default function UnifiedDashboard({ navigation }: any) {
        console.log('Error during biometric sync refresh', error);
     }
 
-    // 🚀 Wait exactly 3 seconds properly before fetching
     await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // 🚀 Call initDashboard instead of fetchData to ensure all states are absolutely fresh
     await initDashboard(); 
   };
 
