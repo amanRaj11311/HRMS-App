@@ -163,15 +163,7 @@ export default function AttendanceModule({ navigation }: any) {
   const initScreen = async () => {
     setLoading(true);
     
-    // 🚀 FIXED: Screen khulte hi silent biometric sync
-    try {
-        const token = await AsyncStorage.getItem('userToken');
-        await axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
-            headers: { Authorization: `Bearer ${token}` } 
-        });
-        await new Promise(res => setTimeout(res, 2000));
-    } catch (e) {}
-
+    // UI jaldi load hone ke liye local data fetch
     const permsStr = await AsyncStorage.getItem('userPermissions');
     const userNameStr = await AsyncStorage.getItem('userName'); 
     const pArray = permsStr ? JSON.parse(permsStr) : [];
@@ -182,7 +174,16 @@ export default function AttendanceModule({ navigation }: any) {
     if (pArray.includes('ATTENDANCE:VIEW')) {
         fetchEmployees();
     }
-    fetchData(false, pArray);
+    
+    await fetchData(false, pArray);
+
+    // Silent background sync - Errors handled globally by interceptor
+    try {
+        const token = await AsyncStorage.getItem('userToken');
+        axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
+            headers: { Authorization: `Bearer ${token}` } 
+        }).catch(() => {});
+    } catch (e) {}
   };
 
   const fetchEmployees = async () => {
@@ -216,7 +217,6 @@ export default function AttendanceModule({ navigation }: any) {
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = res.data?.data || [];
 
-      // 🚀 FIXED: DEDUPLICATION LOGIC HERE
       const uniqueRecordsMap = new Map();
 
       data.forEach((item: any) => {
@@ -278,18 +278,10 @@ export default function AttendanceModule({ navigation }: any) {
       });
 
       setRecords(mapped);
-    } catch (e: any) {
-        // 🚀 FIXED: Token Expire Logic added
-        if (e.response && (e.response.status === 401 || e.response.status === 403)) {
-            Alert.alert("Session Expired", "Token expired plz login again.", [
-                { text: "OK", onPress: async () => {
-                    await AsyncStorage.clear();
-                    navigation.replace('Login');
-                }}
-            ]);
-        }
+    } catch (e) {
+      console.log("Fetch Error:", e);
     } finally { 
-        setLoading(false); setRefreshing(false); 
+      setLoading(false); setRefreshing(false); 
     }
   };
 

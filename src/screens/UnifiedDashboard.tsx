@@ -34,7 +34,6 @@ export default function UnifiedDashboard({ navigation }: any) {
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [monthlyStats, setMonthlyStats] = useState({ present: 0, late: 0, halfDay: 0, wfh: 0, absent: 0, total: 0 });
 
-  // 🚀 FIXED: Proper Promise-based sync ensuring complete data refresh
   useFocusEffect(
     React.useCallback(() => {
       const today = new Date();
@@ -51,17 +50,13 @@ export default function UnifiedDashboard({ navigation }: any) {
   );
 
   const autoSyncAndInit = async () => {
+      initDashboard();
       try {
           const token = await AsyncStorage.getItem('userToken');
-          // Silently trigger biometric device sync
-          await axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
+          axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
               headers: { Authorization: `Bearer ${token}` } 
-          });
-          // Wait 2 seconds for DB to update
-          await new Promise(res => setTimeout(res, 2000));
+          }).catch(() => {}); // Global interceptor will handle token expiry
       } catch (e) {} 
-      
-      initDashboard();
   };
 
   const initDashboard = async () => {
@@ -199,17 +194,16 @@ export default function UnifiedDashboard({ navigation }: any) {
               let isWeekOff = false;
               
               if (dayOfWeek === 0) {
-                  isWeekOff = true; // Sunday hamesha off hai
+                  isWeekOff = true; 
               } else if (dayOfWeek === 6) {
-                  // Saturday tabhi off hai agar date 8 June 2026 ke baad ki ho
-                  const cutoffDate = new Date(2026, 5, 8); // Month 5 ka matlab June hota hai JS mein
+                  const cutoffDate = new Date(2026, 5, 8); 
                   if (loopDate > cutoffDate) {
                       isWeekOff = true;
                   }
               }
 
               if (!isWeekOff) {
-                  a++; // Agar week-off nahi hai tabhi absent badhao
+                  a++; 
               }
           }
       }
@@ -265,16 +259,7 @@ export default function UnifiedDashboard({ navigation }: any) {
           setPendingLeavesList(pLeaves.slice(0, 3)); 
       }
     } catch (e: any) { 
-        console.log(e);
-        // 🚀 FIXED: Token Expired Logic (Alert and Logout)
-        if (e.response && (e.response.status === 401 || e.response.status === 403)) {
-            Alert.alert("Session Expired", "Token expired plz login again.", [
-                { text: "OK", onPress: async () => {
-                    await AsyncStorage.clear();
-                    navigation.replace('Login');
-                }}
-            ]);
-        }
+        console.log("Dashboard Fetch Error:", e);
     } finally { 
         setLoading(false); setRefreshing(false); 
     }
@@ -291,8 +276,8 @@ export default function UnifiedDashboard({ navigation }: any) {
                       const token = await AsyncStorage.getItem('userToken');
                       await axios.put(`${API_BASE}/leaves/${leaveId}`, { status: newStatus }, { headers: { Authorization: `Bearer ${token}` } });
                       initDashboard(); 
-                  } catch (err: any) {
-                      Alert.alert("Error", err.response?.data?.message || "Failed to update leave.");
+                  } catch (e: any) {
+                      Alert.alert("Error", e.response?.data?.message || "Failed to update leave.");
                   } finally { setLoading(false); }
               } 
           }
@@ -364,7 +349,7 @@ export default function UnifiedDashboard({ navigation }: any) {
                 'Pragma': 'no-cache',
                 'Expires': '0'
             } 
-        }).catch((e) => console.log('Ping failed, continuing:', e));
+        }).catch(() => {});
 
     } catch (error) {
        console.log('Error during biometric sync refresh', error);

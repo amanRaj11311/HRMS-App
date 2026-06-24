@@ -9,6 +9,9 @@ import {
   requestNotificationPermission,
 } from './src/services/notificationService';
 
+// 🚀 FIXED: Global navigation ref import kiya
+import { navigationRef } from './src/api/NavigationService'; // Apne folder path ke hisaab se theek kar lena
+
 // Custom Theme Provider
 import { ThemeProvider } from "./src/constants/theme";
 
@@ -60,8 +63,8 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <NavigationContainer>
-        {/* Pass the calculated starting screen to your Navigator */}
+      {/* 🚀 FIXED: navigationRef ko yahan attach kar diya */}
+      <NavigationContainer ref={navigationRef}>
         <AppNavigator initialRoute={initialRoute} />
       </NavigationContainer>
     </ThemeProvider>
