@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Platform, Image, SafeAreaView, StatusBar, ScrollView } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Platform, Image, StatusBar, ScrollView } from "react-native";
 import { createDrawerNavigator } from "@react-navigation/drawer";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -9,41 +9,50 @@ import { useTheme } from '../constants/theme';
 
 // --- Screens ---
 import SplashScreen from "../screens/SplashScreen.tsx"; 
-import WelcomeScreen from "../screens/WelcomeScreen.tsx";
 import LoginScreen from "../screens/LoginScreen";
 import UnifiedDashboard from "../screens/UnifiedDashboard"; 
 import AttendanceModule from "../screens/AttendanceModule"; 
 import LeavesModule from "../screens/LeavesModule"; 
-
 import EmployeesScreen from "../screens/EmployeesScreen";
 import PerformanceScreen from "../screens/PerformanceScreen"; 
 import AdminAssetsScreen from "../screens/AssetsScreen"; 
 import AnalyticsScreen from "../screens/AdminModule/AnalyticsScreen";
 import RolesPermissionsScreen from "../screens/AdminModule/RolesPermissionsScreen"; 
-
 import LeadsScreen from "../screens/LeadsScreen";
 import DocumentsScreen from "../screens/DocumentsScreen";
 import SettingsScreen from "../screens/SettingsScreen";
 import PayslipsScreen from "../screens/PaySlipScreen.tsx";
 import AnnouncementsScreen from "../screens/announcementScreen";
-// 🚀 FIXED: Retained the direct module binding to the dynamic global API configuration path
-import { API_BASE } from '../api/api';
+import CheckoutRequestsModule from "../screens/CheckoutRequestsModule.tsx";
+import TaskManagementModule from "../screens/TaskmanagementScreen.tsx";
+import LeaveBalanceModule from "../screens/LeaveBalanceModule.tsx";
+import NotificationScheduleModule from "../screens/NotificationScheduleModule.tsx";
+import NotificationListScreen from "../screens/NotificationlistScreen.tsx";
 
+import { API_BASE } from '../api/api';
 
 const Stack = createNativeStackNavigator();
 const Drawer = createDrawerNavigator();
-
 
 const getCleanAvatarUrl = (url: string) => {
     if (!url) return '';
     let clean = url.replace(/\\/g, '/'); 
     let fullUrl = clean;
     if (!clean.startsWith('http')) {
-        // 🚀 FIXED: Substituted the absolute static domain origin with the dynamic API_BASE pointer mapping
         fullUrl = clean.startsWith('/') ? `${API_BASE.replace('/api', '')}${clean}` : `${API_BASE.replace('/api', '')}/${clean}`;
     }
     return encodeURI(fullUrl); 
 };
+
+const SAVED_LOGIN_ENABLED = "savedLoginEnabled";
+const SAVED_LOGIN_EMAIL = "savedLoginEmail";
+const SAVED_LOGIN_PASSWORD = "savedLoginPassword";
+
+const SESSION_KEYS = [
+  "userToken", "userId", "employeeId", "userName", "userRole",
+  "userPermissions", "keepLoggedIn", "userDesignation", "userDepartment",
+  "userDoj", "userBankAcc", "userBankName", "userBankIfsc", "userAvatar",
+];
 
 function CustomDrawerContent(props: any) {
   const { navigation, state } = props;
@@ -51,6 +60,8 @@ function CustomDrawerContent(props: any) {
   
   const [userName, setUserName] = useState('User');
   const [userDesignation, setUserDesignation] = useState('EMPLOYEE');
+  // 🚀 FIXED: Added actual Role state to match against "admin", "hr", etc.
+  const [userRoleVal, setUserRoleVal] = useState(''); 
   const [permissions, setPermissions] = useState<string[]>([]);
   const [userInitials, setUserInitials] = useState('U');
   const [userAvatar, setUserAvatar] = useState<string | null>(null); 
@@ -83,6 +94,10 @@ function CustomDrawerContent(props: any) {
           );
       }
       
+      if (role) {
+          setUserRoleVal(role.toLowerCase().trim()); // Make it lowercase for easy checking
+      }
+
       if (perms) {
           const parsedPerms = JSON.parse(perms);
           setPermissions(parsedPerms.map((p: string) => p.toUpperCase()));
@@ -121,33 +136,101 @@ function CustomDrawerContent(props: any) {
     }
   };
 
-  const hasModulePerm = (moduleKey: string) => {
-    if (!moduleKey) return true; 
-    return permissions.some(p => p.includes(moduleKey.toUpperCase()));
+  // 🚀 FIXED: New function handling BOTH Roles and Permissions (OR logic)
+  const canAccessMenu = (item: any) => {
+    // Agar menu par koi restriction nahi hai
+    if (!item.perm && !item.roles) return true;
+    
+    // Check if user has required Role
+    const hasRole = item.roles ? item.roles.includes(userRoleVal) : false;
+    
+    // Check if user has required Permission
+    const hasPerm = item.perm ? permissions.some(p => p.includes(item.perm.toUpperCase())) : false;
+    
+    // OR Logic: Role ho YA Permission ho, access mil jayega
+    return hasRole || hasPerm;
   };
 
   const handleLogout = () => {
-    Alert.alert("Logout", "Are you sure you want to log out?", [
-        { text: "Cancel", style: "cancel" }, 
-        { text: "Logout", style: "destructive", onPress: async () => {
-          await AsyncStorage.clear();
-          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-        }}
-    ]);
+    Alert.alert(
+      "Logout",
+      "Do you want to keep saved login details on this device?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove Details",
+          style: "destructive",
+          onPress: async () => {
+            await AsyncStorage.multiRemove([
+              ...SESSION_KEYS, SAVED_LOGIN_ENABLED, SAVED_LOGIN_EMAIL, SAVED_LOGIN_PASSWORD,
+            ]);
+            navigation.reset({ index: 0, routes: [{ name: "Login" }] });
+          },
+        },
+        {
+          text: "Keep Details",
+          onPress: async () => {
+            await AsyncStorage.multiRemove(SESSION_KEYS);
+            navigation.reset({ index: 0, routes: [{ name: "Login" }] });
+          },
+        },
+      ]
+    );
   };
 
   const menuSections = [
-    { title: 'MAIN', items: [{ label: 'Dashboard', icon: 'view-dashboard-outline', activeIcon: 'view-dashboard', screen: 'Dashboard' }, { label: 'Analytics', icon: 'chart-pie', activeIcon: 'chart-pie', screen: 'Analytics', perm: 'ANALYTICS'},{ label: 'Roles & Permissions', icon: 'shield-account-outline', activeIcon: 'shield-account', screen: 'RolesPermissions', perm: 'ROLE'  }] },
-    { title: 'PEOPLE', items: [{ label: 'Employees', icon: 'account-group-outline', activeIcon: 'account-group', screen: 'Employees', perm: 'EMPLOYEE' },{ label: 'Leads', icon: 'account-multiple-plus-outline', activeIcon: 'account-multiple-plus', screen: 'Leads', perm: 'LEADS' }, ] },
-    { title: 'OPERATIONS', items: [{ label: 'Assets', icon: 'briefcase-outline', activeIcon: 'briefcase', screen: 'Assets', perm: 'ASSET' },{ label: 'Attendance', icon: 'calendar-check-outline', activeIcon: 'calendar-check', screen: 'Attendance', perm: 'ATTENDANCE' }, { label: 'Leaves', icon: 'calendar-blank-outline', activeIcon: 'calendar-month', screen: 'Leaves', perm: 'LEAVES' },  { label: 'Payslips', icon: 'file-document-outline', activeIcon: 'file-document', screen: 'Payslips', perm: 'SALARY-SLIP' }, { label: 'Performance', icon: 'star-outline', activeIcon: 'star', screen: 'Performance', perm: 'PERFORMANCE' }, ] },
-    { title: 'COMPANY', items: [{ label: 'Announcements', icon: 'bullhorn-outline', activeIcon: 'bullhorn', screen: 'Announcements', perm: 'ANNOUNCEMENT' },{ label: 'Documents', icon: 'folder-outline', activeIcon: 'folder', screen: 'Documents' }, { label: 'Settings', icon: 'cog-outline', activeIcon: 'cog', screen: 'Settings' }] }
+    { 
+      title: 'MAIN', 
+      items: [
+        { label: 'Dashboard', icon: 'view-dashboard-outline', activeIcon: 'view-dashboard', screen: 'Dashboard' }, 
+        { label: 'Analytics', icon: 'chart-pie', activeIcon: 'chart-pie', screen: 'Analytics', perm: 'ANALYTICS'},
+        { label: 'Notifications', icon: 'bell-outline', activeIcon: 'bell', screen: 'NotificationList' },
+        { label: 'Roles & Permissions', icon: 'shield-account-outline', activeIcon: 'shield-account', screen: 'RolesPermissions', perm: 'ROLE' }
+      ] 
+    },
+    { 
+      title: 'PEOPLE', 
+      items: [
+        { label: 'Employees', icon: 'account-group-outline', activeIcon: 'account-group', screen: 'Employees', perm: 'EMPLOYEE' },
+        { label: 'Leads', icon: 'account-multiple-plus-outline', activeIcon: 'account-multiple-plus', screen: 'Leads', perm: 'LEADS' }
+      ] 
+    },
+    { 
+      title: 'OPERATIONS', 
+      items: [
+        { label: 'Assets', icon: 'briefcase-outline', activeIcon: 'briefcase', screen: 'Assets', perm: 'ASSET' },
+        { label: 'Attendance', icon: 'calendar-check-outline', activeIcon: 'calendar-check', screen: 'Attendance', perm: 'ATTENDANCE' }, 
+        { label: 'Tasks', icon: 'format-list-checks', activeIcon: 'format-list-checks', screen: 'Tasks', perm: 'TASK' },
+        { label: 'Checkout Requests', icon: 'clock-alert-outline', activeIcon: 'clock-check', screen: 'CheckoutRequests' },
+        { label: 'Leaves', icon: 'calendar-blank-outline', activeIcon: 'calendar-month', screen: 'Leaves', perm: 'LEAVES' }, 
+        { label: 'Leave Balance', icon: 'scale-balance', activeIcon: 'scale-balance', screen: 'LeaveBalance', perm: 'LEAVE_BALANCE' }, 
+        { label: 'Payslips', icon: 'file-document-outline', activeIcon: 'file-document', screen: 'Payslips', perm: 'SALARY-SLIP' }, 
+        { label: 'Performance', icon: 'star-outline', activeIcon: 'star', screen: 'Performance', perm: 'PERFORMANCE' }, 
+    ] },
+    { 
+      title: 'COMPANY', 
+      items: [
+        { label: 'Announcements', icon: 'bullhorn-outline', activeIcon: 'bullhorn', screen: 'Announcements', perm: 'ANNOUNCEMENT' },
+        { label: 'Documents', icon: 'folder-outline', activeIcon: 'folder', screen: 'Documents' }, 
+         { 
+            label: 'Notification Schedule', 
+            icon: 'clock-outline', 
+            activeIcon: 'clock', 
+            screen: 'NotificationSchedule', 
+            perm: 'NOTIFICATION', 
+            roles: ['admin', 'hr'] // Role based logic mapped from backend
+        },
+        { label: 'Settings', icon: 'cog-outline', activeIcon: 'cog', screen: 'Settings' },
+        // 🚀 FIXED: Role ['admin', 'hr'] AND Perm 'NOTIFICATION' apply here
+       
+      ] 
+    }
   ];
 
   return (
     <View style={styles.floatingMenuWrapper}>
       <View style={[styles.floatingMenuCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
         
-        {/* Header Section */}
         <View style={[styles.headerContainer, { borderBottomColor: colors.border, backgroundColor: isLightMode ? '#F8FAFC' : '#1E293B' }]}>
             <View style={styles.userProfileSection}>
                 <View style={[styles.avatarBox, { borderColor: colors.primary }]}>
@@ -166,11 +249,11 @@ function CustomDrawerContent(props: any) {
             </View>
         </View>
 
-        {/* 🚀 FIXED: Changed to Standard ScrollView to wrap perfectly around content without stretching */}
         <ScrollView bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={{paddingTop: 10, paddingBottom: 10}}>
           <View style={{paddingHorizontal: 12}}>
               {menuSections.map((section, idx) => {
-                  const visibleItems = section.items.filter(item => !item.perm || hasModulePerm(item.perm));
+                  // 🚀 Apply the new generic canAccessMenu filter
+                  const visibleItems = section.items.filter(item => canAccessMenu(item));
                   if (visibleItems.length === 0) return null;
                   
                   return (
@@ -191,7 +274,6 @@ function CustomDrawerContent(props: any) {
           </View>
         </ScrollView>
         
-        {/* Footer Section (Logout) */}
         <View style={[styles.footer, {borderTopColor: colors.border}]}>
           <TouchableOpacity style={[styles.logoutBtn, {backgroundColor: isLightMode ? '#FEE2E2' : '#450A0A'}]} onPress={handleLogout}>
             <MaterialCommunityIcons name="logout-variant" size={20} color="#EF4444" />
@@ -220,7 +302,10 @@ export function MyDrawer() {
     >
       <Drawer.Screen name="Dashboard" component={UnifiedDashboard} />
       <Drawer.Screen name="Attendance" component={AttendanceModule} />
+      <Drawer.Screen name="Tasks" component={TaskManagementModule} />
+      <Drawer.Screen name="CheckoutRequests" component={CheckoutRequestsModule} />
       <Drawer.Screen name="Leaves" component={LeavesModule} /> 
+      <Drawer.Screen name="LeaveBalance" component={LeaveBalanceModule} />
       <Drawer.Screen name="Performance" component={PerformanceScreen} />
       <Drawer.Screen name="Employees" component={EmployeesScreen} />
       <Drawer.Screen name="Announcements" component={AnnouncementsScreen} />
@@ -231,6 +316,8 @@ export function MyDrawer() {
       <Drawer.Screen name="Documents" component={DocumentsScreen} /> 
       <Drawer.Screen name="Settings" component={SettingsScreen} />
       <Drawer.Screen name="Payslips" component={PayslipsScreen} />
+      <Drawer.Screen name="NotificationSchedule" component={NotificationScheduleModule} />
+      <Drawer.Screen name="NotificationList" component={NotificationListScreen} />
     </Drawer.Navigator>
   );
 }
@@ -246,17 +333,15 @@ export default function AppNavigator() {
 }
 
 const styles = StyleSheet.create({
-  // 🚀 FIXED: Wrapped to align top and removed flex: 1 from card to wrap content
   floatingMenuWrapper: {
       flex: 1,
       backgroundColor: 'transparent',
       paddingRight: 10, 
       paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 10 : 50,
       paddingBottom: 20, 
-      justifyContent: 'flex-start', // <--- Pushes everything to the top
+      justifyContent: 'flex-start',
   },
   floatingMenuCard: {
-      // 🚀 FIXED: flex: 1 removed. Now it sizes to content.
       borderRadius: 16, 
       overflow: 'hidden', 
       elevation: 15, 
@@ -265,9 +350,8 @@ const styles = StyleSheet.create({
       shadowOpacity: 0.2,
       shadowRadius: 10,
       borderWidth: 1,
-      maxHeight: '95%', // <--- Stops it from exceeding screen if there are many links
+      maxHeight: '95%',
   },
-  
   headerContainer: { 
       paddingVertical: 20, 
       paddingHorizontal: 20, 

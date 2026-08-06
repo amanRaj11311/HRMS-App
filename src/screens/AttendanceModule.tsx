@@ -13,18 +13,11 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme';
 import GlobalAppBar from '../components/GlobalAppBar'; 
-import {showLocalNotification} from '../services/notificationService';
 
-import Geolocation from 'react-native-geolocation-service';
-import ImagePicker from 'react-native-image-crop-picker';
 import { API_BASE } from '../api/api';
 
-const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday'];
+const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday', 'missed', 'overtime'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const FULL_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-const OFFICE_COORDS = { latitude: 26.875690, longitude: 75.753272 }; 
-const ALLOWED_RADIUS_METERS = 15; 
 
 export default function AttendanceModule({ navigation }: any) {
   const { colors, isLightMode } = useTheme();
@@ -32,7 +25,10 @@ export default function AttendanceModule({ navigation }: any) {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  
   const [records, setRecords] = useState<any[]>([]);
+  const [checkoutRequests, setCheckoutRequests] = useState<any[]>([]);
+
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [myName, setMyName] = useState('My Record');
@@ -47,6 +43,15 @@ export default function AttendanceModule({ navigation }: any) {
   const [filterEmpId, setFilterEmpId] = useState('All');
   const [filterEmpName, setFilterEmpName] = useState('All Employees');
   const [showEmpModal, setShowEmpModal] = useState(false);
+
+  const [isCheckoutModalVisible, setIsCheckoutModalVisible] = useState(false);
+  const [requestLoading, setSubmitRequestLoading] = useState(false);
+  const [selectedAttendance, setSelectedAttendance] = useState<any>(null);
+  const [showRequestTimePicker, setShowRequestTimePicker] = useState(false);
+  const [requestForm, setRequestForm] = useState({
+    time: (() => { const d = new Date(); d.setHours(18, 0, 0, 0); return d; })(),
+    reason: ''
+  });
 
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -69,8 +74,6 @@ export default function AttendanceModule({ navigation }: any) {
   const [showDlEndPicker, setShowDlEndPicker] = useState(false);
   const [showDlEmpModal, setShowDlEmpModal] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-
-  const [isPunching, setIsPunching] = useState(false);
 
   const getInitialTime = (hours: number, minutes = 0) => {
     const d = new Date();
@@ -109,20 +112,22 @@ export default function AttendanceModule({ navigation }: any) {
       return `${h}:${m} ${ampm}`;
   };
 
-  const formatWorkingHours = (decimalStr: any) => {
-      if (!decimalStr) return '--';
-      const totalMinutes = Math.floor(parseFloat(decimalStr) * 60);
-      const h = Math.floor(totalMinutes / 60);
-      const m = totalMinutes % 60;
+  const formatWorkingHours = (val: any) => {
+      if (val === null || val === undefined || val === '') return '--';
+      const num = parseFloat(val);
+      if (isNaN(num) || num === 0) return '0h 0m';
+      const h = Math.floor(num);
+      const m = Math.round((num - h) * 60);
       return `${h}h ${m}m`;
   };
 
   const getStatusStyle = (status: string) => {
       const s = String(status || "").toLowerCase();
-      if (s === 'present') return { bg: '#DCFCE7', text: '#16A34A' };
+      if (s === 'present' || s === 'overtime') return { bg: '#DCFCE7', text: '#16A34A' }; 
       if (s === 'late') return { bg: '#FEF3C7', text: '#D97706' };
       if (s === 'absent') return { bg: '#FEE2E2', text: '#DC2626' };
-      if (s === 'half-day') return { bg: '#DBEAFE', text: '#2563EB' };
+      if (s === 'half-day' || s === 'halfday') return { bg: '#DBEAFE', text: '#2563EB' };
+      if (s === 'missed') return { bg: '#FEE2E2', text: '#EA580C' };
       return { bg: '#F1F5F9', text: '#64748B' };
   };
 
@@ -149,10 +154,8 @@ export default function AttendanceModule({ navigation }: any) {
           const token = await AsyncStorage.getItem('userToken');
           const pad = (n: number) => n < 10 ? '0' + n : n;
           const dStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-          
           const res = await axios.get(`${API_BASE}/attendance?date=${dStr}`, { headers: { Authorization: `Bearer ${token}` } });
           const punchedIds = (res.data?.data || []).map((r:any) => r.employeeId?._id || r.employeeId);
-          
           const absentees = allEmployees.filter(emp => !punchedIds.includes(emp._id));
           setFormAbsentEmployees(absentees);
       } catch (e) {
@@ -162,8 +165,6 @@ export default function AttendanceModule({ navigation }: any) {
 
   const initScreen = async () => {
     setLoading(true);
-    
-    // UI jaldi load hone ke liye local data fetch
     const permsStr = await AsyncStorage.getItem('userPermissions');
     const userNameStr = await AsyncStorage.getItem('userName'); 
     const pArray = permsStr ? JSON.parse(permsStr) : [];
@@ -176,14 +177,6 @@ export default function AttendanceModule({ navigation }: any) {
     }
     
     await fetchData(false, pArray);
-
-    // Silent background sync - Errors handled globally by interceptor
-    try {
-        const token = await AsyncStorage.getItem('userToken');
-        axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
-            headers: { Authorization: `Bearer ${token}` } 
-        }).catch(() => {});
-    } catch (e) {}
   };
 
   const fetchEmployees = async () => {
@@ -198,24 +191,39 @@ export default function AttendanceModule({ navigation }: any) {
     try {
       if (!isSilent) setLoading(true);
       const token = await AsyncStorage.getItem('userToken');
-      const myId = await AsyncStorage.getItem('employeeId');
       const currentPerms = pArray || permissions;
       const canViewAll = currentPerms.includes('ATTENDANCE:VIEW');
 
       let url = `${API_BASE}/attendance`;
+      let reqUrl = `${API_BASE}/checkout-requests`;
       
+      const m = filterDate.getMonth() + 1;
+      const y = filterDate.getFullYear();
+
       if (canViewAll) {
-          const d = filterDate;
           const pad = (n: number) => n < 10 ? '0' + n : n;
-          url += `?date=${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+          const dateStr = `${y}-${pad(m)}-${pad(filterDate.getDate())}`;
+          url += `?date=${dateStr}&limit=500`;
+          reqUrl += `?date=${dateStr}&limit=500`; 
       } else {
-          url += `?employeeId=${myId}&limit=100`; 
+          url = `${API_BASE}/attendance/self?month=${m}&year=${y}&limit=100`; 
+          reqUrl = `${API_BASE}/checkout-requests/self?limit=500`; 
       }
 
       url += `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+      reqUrl += `${reqUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
 
-      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
-      const data = res.data?.data || [];
+      const [res, reqRes] = await Promise.all([
+         axios.get(url, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+         axios.get(reqUrl, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null)
+      ]);
+
+      const data = res?.data?.data || [];
+      const requestsData = reqRes?.data?.data || [];
+      
+      requestsData.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
+      setCheckoutRequests(requestsData);
 
       const uniqueRecordsMap = new Map();
 
@@ -236,48 +244,58 @@ export default function AttendanceModule({ navigation }: any) {
           }
       });
 
-      const deduplicatedData = Array.from(uniqueRecordsMap.values());
-
-      const mapped = deduplicatedData.map((item: any) => {
+      // Status Override Logic
+      const finalData = Array.from(uniqueRecordsMap.values()).map((item: any) => {
         let updated = { ...item };
-        let hasValidCheckOut = true;
-
-        if (updated.checkIn?.time && updated.checkOut?.time) {
-            const inMs = new Date(updated.checkIn.time).getTime();
-            const outMs = new Date(updated.checkOut.time).getTime();
-            
-            if (Math.abs(outMs - inMs) <= 2000) {
-                updated.checkOut.time = null;
-                updated.workingHours = null;
-                hasValidCheckOut = false; 
-            }
-        } else if (!updated.checkOut?.time) {
-            hasValidCheckOut = false;
-        }
         
-        if (updated.checkIn?.time) {
-            const punchIn = new Date(updated.checkIn.time);
-            const hour = punchIn.getHours();
-            const min = punchIn.getMinutes();
-            
-            const isLate = (hour > 9 || (hour === 9 && min > 15));
+        const relatedReq = requestsData.find((r: any) => {
+            const reqAttId = r.attendanceId?._id || r.attendanceId;
+            return String(reqAttId) === String(updated._id);
+        });
+        updated._relatedReq = relatedReq;
 
-            if (hasValidCheckOut && updated.workingHours !== null && updated.workingHours !== undefined) {
-                const hours = parseFloat(updated.workingHours);
-                if (!isNaN(hours) && hours < 4) {
-                    updated.status = 'half-day';
-                } else {
+        const currentStatus = String(item.status).toLowerCase();
+        
+        if (!['absent', 'holiday', 'week-off'].includes(currentStatus)) {
+            if (updated.checkIn && updated.checkIn.time) {
+                const checkInDate = new Date(updated.checkIn.time);
+                const checkInMs = checkInDate.getTime();
+                const isLate = currentStatus === 'late';
+                
+                if (!updated.checkOut || !updated.checkOut.time) {
+                    updated.workingHours = 0;
                     updated.status = isLate ? 'late' : 'present';
+                } 
+                else {
+                    const checkOutDate = new Date(updated.checkOut.time);
+                    const checkOutMs = checkOutDate.getTime();
+                    const diffMs = checkOutMs - checkInMs;
+                    const diffMinutes = diffMs / (1000 * 60);
+
+                    if (diffMinutes <= 1) {
+                        updated.checkOut = null; 
+                        updated.workingHours = 0; 
+                        updated.status = isLate ? 'late' : 'present';
+                    } 
+                    else {
+                        const workingHours = diffMs / (1000 * 60 * 60); 
+                        updated.workingHours = workingHours;
+                        
+                        if (workingHours < 6) {
+                            updated.status = 'half-day';
+                        } else {
+                            updated.status = isLate ? 'late' : 'present';
+                        }
+                    }
                 }
-            } else {
-                updated.status = isLate ? 'late' : 'present';
             }
         }
 
         return updated;
       });
 
-      setRecords(mapped);
+      setRecords(finalData);
+
     } catch (e) {
       console.log("Fetch Error:", e);
     } finally { 
@@ -294,9 +312,7 @@ export default function AttendanceModule({ navigation }: any) {
         await axios.get(syncUrl, { 
             headers: { 
                 Authorization: `Bearer ${token}`,
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache',
-                'Expires': '0'
+                'Cache-Control': 'no-cache'
             } 
         }).catch(() => {});
 
@@ -339,7 +355,6 @@ export default function AttendanceModule({ navigation }: any) {
     try {
       setIsDownloading(true);
       const token = await AsyncStorage.getItem('userToken');
-
       const targetEmployees = dlEmpId === 'All' ? allEmployees : allEmployees.filter(e => e._id === dlEmpId);
       
       if (!targetEmployees || targetEmployees.length === 0) {
@@ -364,7 +379,6 @@ export default function AttendanceModule({ navigation }: any) {
 
       for (let i = 0; i < targetEmployees.length; i += chunkSize) {
           const chunk = targetEmployees.slice(i, i + chunkSize);
-          
           const pad = (n: number) => n < 10 ? '0' + n : n;
           const startDateStr = `${sDate.getFullYear()}-${pad(sDate.getMonth() + 1)}-${pad(sDate.getDate())}`;
           const endDateStr = `${eDate.getFullYear()}-${pad(eDate.getMonth() + 1)}-${pad(eDate.getDate())}`;
@@ -420,33 +434,15 @@ export default function AttendanceModule({ navigation }: any) {
                       checkOut = formatTimeUI(rec.checkOut);
                       hrs = rec.workingHours ? parseFloat(rec.workingHours).toFixed(2) : '0';
                   } else {
-                      const dayOfWeek = loopDate.getDay();
-                      let isWeekOff = false;
-                      
-                      if (dayOfWeek === 0) {
-                          isWeekOff = true;
-                      } else if (dayOfWeek === 6) {
-                          const cutoffDate = new Date(2026, 5, 8);
-                          if (loopDate > cutoffDate) {
-                              isWeekOff = true;
-                          }
-                      }
-                      
-                      status = isWeekOff ? 'week-off' : 'absent';
-                      checkIn = "--:-- --";
-                      checkOut = "--:-- --";
-                      hrs = "0";
+                      status = 'absent'; checkIn = "--:-- --"; checkOut = "--:-- --"; hrs = "0";
                   }
 
                   excelContent += `<Row><Cell><Data ss:Type="String">${displayDate}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(empIdStr)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(empNameStr)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(status)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(checkIn)}</Data></Cell><Cell><Data ss:Type="String">${escapeXml(checkOut)}</Data></Cell><Cell><Data ss:Type="String">${hrs}</Data></Cell></Row>\n`;
               }
-              
               excelContent += `</Table>\n</Worksheet>\n`;
           });
-
           await new Promise(resolve => setTimeout(resolve, 300));
       }
-
       excelContent += `</Workbook>`;
 
       const safeStart = getSafeDateString(dlStartDate).replace(/\//g, '');
@@ -467,7 +463,6 @@ export default function AttendanceModule({ navigation }: any) {
           const filePath = `${RNFS.DownloadDirectoryPath}/${fileName}`;
           await RNFS.writeFile(filePath, excelContent, 'utf8');
           Alert.alert("Download Complete! 🎉", `Report successfully saved in your phone's 'Downloads' folder:\n\n${fileName}`);
-          
       } else {
           const filePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
           await RNFS.writeFile(filePath, excelContent, 'utf8');
@@ -477,9 +472,7 @@ export default function AttendanceModule({ navigation }: any) {
               title: 'Save Attendance Report'
           });
       }
-
       setIsDownloadModalVisible(false);
-      
     } catch (error: any) {
       if (error?.message !== 'User did not share') {
           Alert.alert("Error", String(error.message || "An unexpected error occurred."));
@@ -491,14 +484,6 @@ export default function AttendanceModule({ navigation }: any) {
 
   const saveRecord = async () => {
     if (!formData.employeeId) return Alert.alert("Required", "Please select an Employee first.");
-
-    if (formData.status !== 'absent' && formData.status !== 'holiday') {
-        const inMins = formData.checkIn.getHours() * 60 + formData.checkIn.getMinutes();
-        const outMins = formData.checkOut.getHours() * 60 + formData.checkOut.getMinutes();
-        if (outMins <= inMins) {
-            return Alert.alert("Validation Error", "Check-out time must be later than Check-in time.");
-        }
-    }
 
     try {
       setFormLoading(true);
@@ -532,6 +517,51 @@ export default function AttendanceModule({ navigation }: any) {
         Alert.alert("Failed", err.response?.data?.message || "Server Error. Please check your data."); 
     }
     finally { setFormLoading(false); }
+  };
+
+  const handleRequestCheckoutSubmit = async () => {
+    if (!requestForm.reason.trim()) {
+      return Alert.alert("Required", "Please provide a reason for missing the punch-out.");
+    }
+
+    try {
+      setSubmitRequestLoading(true);
+      const token = await AsyncStorage.getItem('userToken');
+      
+      const pad = (n: number) => n < 10 ? '0' + n : n;
+      const timeStr = `${pad(requestForm.time.getHours())}:${pad(requestForm.time.getMinutes())}`;
+      
+      let recordDateStr = '';
+      if (selectedAttendance?.date) {
+          recordDateStr = selectedAttendance.date.split('T')[0];
+      } else if (selectedAttendance?.checkIn?.time) {
+          recordDateStr = selectedAttendance.checkIn.time.split('T')[0];
+      } else {
+          recordDateStr = `${filterDate.getFullYear()}-${pad(filterDate.getMonth()+1)}-${pad(filterDate.getDate())}`;
+      }
+
+      const payload = {
+        attendanceId: selectedAttendance._id,
+        checkOutTime: timeStr,
+        date: recordDateStr,
+        reason: requestForm.reason
+      };
+
+      const res = await axios.post(`${API_BASE}/checkout-requests`, payload, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.data?.success) {
+        Alert.alert("Success 🎉", "Checkout request sent for approval!");
+        setIsCheckoutModalVisible(false);
+        setRequestForm({ time: getInitialTime(18,0), reason: '' });
+        fetchData(true); 
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.message || "Failed to submit request.");
+    } finally {
+      setSubmitRequestLoading(false);
+    }
   };
 
   const deleteRecord = (id: string) => {
@@ -577,141 +607,32 @@ export default function AttendanceModule({ navigation }: any) {
       setIsAddModalVisible(true);
   };
 
-  let baseDateRecords: any[] = [];
-  let absentCountForSelectedDate = 0;
+  // 🚀 FIXED: DYNAMIC KPI CALCULATION FROM CORRECTED FRONTEND DATA
+  let totalPresentCount = 0;
+  let absentCountLocal = 0;
+  let lateCountLocal = 0;
+  let halfDayCountLocal = 0;
+  let otHoursTotal = 0;
 
-  if (canDo('VIEW')) {
-      const targetDateStr = getSafeDateString(filterDate);
-      baseDateRecords = records.filter(rec => {
-          const d = new Date(rec.date || rec.checkIn?.time || filterDate);
-          return getSafeDateString(d) === targetDateStr;
-      });
-
-      const targetDateObj = new Date(filterDate);
-      const dayOfWeek = targetDateObj.getDay();
-      let isWeekOff = false;
+  records.forEach(r => {
+      const s = String(r.status || 'present').toLowerCase();
       
-      if (dayOfWeek === 0) {
-          isWeekOff = true;
-      } else if (dayOfWeek === 6) {
-          const cutoffDate = new Date(2026, 5, 8);
-          if (targetDateObj > cutoffDate) {
-              isWeekOff = true;
-          }
+      if (s === 'absent') {
+          absentCountLocal++;
+      } else if (s !== 'holiday' && s !== 'week-off') {
+          totalPresentCount++; // Present, Late, Half-day, Overtime sab isme count honge
+          if (s === 'late') lateCountLocal++;
+          if (s === 'half-day' || s === 'halfday') halfDayCountLocal++;
       }
 
-      const punchedIds = baseDateRecords.map(r => r.employeeId?._id || r.employeeId);
-      const absentEmps = allEmployees.filter(e => !punchedIds.includes(e._id)).map(e => ({
-          _id: `${isWeekOff ? 'weekoff' : 'absent'}-${e._id}`, 
-          employeeId: e, 
-          status: isWeekOff ? 'week-off' : 'absent', 
-          date: filterDate, 
-          checkIn: null, 
-          checkOut: null
-      }));
-      
-      absentCountForSelectedDate = isWeekOff ? 0 : absentEmps.length;
-      baseDateRecords = [...baseDateRecords, ...absentEmps];
-      
-  } else {
-      const targetMonth = filterDate.getMonth();
-      const targetYear = filterDate.getFullYear();
-      
-      const fetchedMonthRecords = records.filter(r => {
-          const d = new Date(r.date || r.checkIn?.time);
-          return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
-      });
-
-      const now = new Date();
-      let lastDay = new Date(targetYear, targetMonth + 1, 0).getDate(); 
-      if (targetMonth === now.getMonth() && targetYear === now.getFullYear()) {
-          lastDay = now.getDate(); 
-      } else if (targetYear > now.getFullYear() || (targetYear === now.getFullYear() && targetMonth > now.getMonth())) {
-          lastDay = 0; 
+      if (r.overtime && !isNaN(parseFloat(r.overtime))) {
+          otHoursTotal += parseFloat(r.overtime);
       }
-
-      let startDay = 1;
-      if (records.length > 0) {
-          const earliestTime = Math.min(...records.map(r => new Date(r.date || r.checkIn?.time).getTime()));
-          const earliestDate = new Date(earliestTime);
-          if (earliestDate.getMonth() === targetMonth && earliestDate.getFullYear() === targetYear) {
-              startDay = earliestDate.getDate();
-          }
-      }
-
-      const monthlyMap = new Map();
-      fetchedMonthRecords.forEach(r => {
-          const d = new Date(r.date || r.checkIn?.time);
-          monthlyMap.set(getSafeDateString(d), r);
-      });
-
-      for (let i = startDay; i <= lastDay; i++) {
-          const loopDate = new Date(targetYear, targetMonth, i);
-          const dStr = getSafeDateString(loopDate);
-          
-          if (monthlyMap.has(dStr)) {
-              baseDateRecords.push(monthlyMap.get(dStr));
-         } else {
-              const dayOfWeek = loopDate.getDay();
-              let isWeekOff = false;
-              
-              if (dayOfWeek === 0) {
-                  isWeekOff = true;
-              } else if (dayOfWeek === 6) {
-                  const cutoffDate = new Date(2026, 5, 8); 
-                  if (loopDate > cutoffDate) {
-                      isWeekOff = true;
-                  }
-              }
-              
-              baseDateRecords.push({
-                  _id: `${isWeekOff ? 'weekoff' : 'absent'}-self-${dStr}`, 
-                  employeeId: { userId: { firstName: myName.split(' ')[0] || '', lastName: myName.split(' ').slice(1).join(' ') || '' } }, 
-                  status: isWeekOff ? 'week-off' : 'absent', 
-                  date: loopDate, 
-                  checkIn: null, 
-                  checkOut: null
-              });
-          }
-      }
-      
-      baseDateRecords.sort((a, b) => new Date(b.date || b.checkIn?.time).getTime() - new Date(a.date || a.checkIn?.time).getTime());
-  }
-
-  useEffect(() => {
-    const notifyAbsentEmployees = async () => {
-      const hasViewPermission = permissions.includes('ATTENDANCE:VIEW');
-      if (!hasViewPermission || absentCountForSelectedDate <= 0) {
-        return;
-      }
-
-      const dateKey = getSafeDateString(filterDate);
-      const storageKey = `absent_notified_${dateKey}`;
-      const alreadyNotified = await AsyncStorage.getItem(storageKey);
-      if (alreadyNotified === String(absentCountForSelectedDate)) {
-        return;
-      }
-
-      await AsyncStorage.setItem(storageKey, String(absentCountForSelectedDate));
-      showLocalNotification(
-        'Absent Employees Found',
-        `${absentCountForSelectedDate} employee(s) marked absent on ${dateKey}.`,
-      );
-    };
-
-    notifyAbsentEmployees();
-  }, [absentCountForSelectedDate, filterDate, permissions]);
-
-  let p = 0, a = 0, l = 0, h = 0;
-  baseDateRecords.forEach(r => {
-      const s = String(r.status || "").toLowerCase();
-      if (s === 'present') p++;
-      else if (s === 'late') l++;
-      else if (s === 'absent') a++;
-      else if (s === 'half-day') h++;
   });
 
-  const displayRecords = baseDateRecords.filter(rec => {
+  const otDisplayFormatted = otHoursTotal > 0 ? `${Math.floor(otHoursTotal)}h ${Math.round((otHoursTotal % 1) * 60)}m` : '0h';
+
+  const displayRecords = records.filter(rec => {
       const name = `${rec.employeeId?.userId?.firstName || ''} ${rec.employeeId?.userId?.lastName || ''}`.toLowerCase();
       const safeSearch = String(searchQuery || '').toLowerCase();
       const matchesSearch = name.includes(safeSearch);
@@ -748,10 +669,11 @@ export default function AttendanceModule({ navigation }: any) {
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 20}}>
-            <KpiCard label="Present" val={p} color="#10B981" icon="account-check" />
-            <KpiCard label="Absent" val={a} color="#EF4444" icon="account-remove" />
-            <KpiCard label="Late" val={l} color="#F59E0B" icon="clock-alert" />
-            <KpiCard label="Half Day" val={h} color="#3B82F6" icon="circle-half-full" />
+            <KpiCard label="Total Present" val={totalPresentCount} color="#10B981" icon="account-check" />
+            <KpiCard label="Absent" val={absentCountLocal} color="#EF4444" icon="account-remove" />
+            <KpiCard label="Late" val={lateCountLocal} color="#F59E0B" icon="clock-alert" />
+            <KpiCard label="Half Day" val={halfDayCountLocal} color="#3B82F6" icon="circle-half-full" />
+            <KpiCard label="Total OT (Hrs)" val={otDisplayFormatted} color="#8B5CF6" icon="clock-plus-outline" />
         </ScrollView>
 
         <View style={styles.filterRow}>
@@ -786,7 +708,22 @@ export default function AttendanceModule({ navigation }: any) {
             <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border}]} onPress={() => setShowStatusModal(true)}><Text style={[styles.filterText, {color: colors.textMain}]}>{filterStatus}</Text></TouchableOpacity>
         </View>
 
-        {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{marginTop: 50}}/> : displayRecords.map((item, index) => (
+        {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{marginTop: 50}}/> : displayRecords.map((item, index) => {
+            
+            const recordDateStr = item.date || item.checkIn?.time || filterDate;
+            const recordDateObj = new Date(recordDateStr);
+            recordDateObj.setHours(0, 0, 0, 0);
+            
+            const todayObj = new Date();
+            todayObj.setHours(0, 0, 0, 0);
+            
+            const isPastDay = recordDateObj.getTime() < todayObj.getTime();
+            const hasNoCheckout = item.checkIn?.time && (!item.checkOut?.time || item.workingHours === 0);
+            const canShowRequestButton = hasNoCheckout && isPastDay && !canDo('VIEW');
+            const relatedReq = item._relatedReq;
+            const statusText = item.status || 'present';
+
+            return (
             <View key={index} style={[styles.attCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
                 <View style={styles.cardHeader}>
                     <View style={styles.userInfo}>
@@ -797,9 +734,11 @@ export default function AttendanceModule({ navigation }: any) {
                         </View>
                     </View>
                     <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                        <View style={[styles.statusTag, {backgroundColor: getStatusStyle(item.status).bg}]}>
-                            <Text style={[styles.statusTagText, {color: getStatusStyle(item.status).text}]}>{item.status}</Text>
+                        
+                        <View style={[styles.statusTag, {backgroundColor: getStatusStyle(statusText).bg}]}>
+                            <Text style={[styles.statusTagText, {color: getStatusStyle(statusText).text}]}>{statusText}</Text>
                         </View>
+
                         {canDo('UPDATE') && item.status !== 'absent' && (
                             <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(item)}>
                                 <Feather name="edit-2" size={14} color={colors.textSub} />
@@ -813,18 +752,60 @@ export default function AttendanceModule({ navigation }: any) {
                     </View>
                 </View>
 
-                {item.status !== 'absent' && (
+                {item.status !== 'absent' && item.status !== 'holiday' && item.status !== 'week-off' && (
                     <View style={[styles.cardBody, {borderTopColor: colors.border}]}>
                         <View style={styles.timeInfo}><Text style={styles.timeLabel}>CHECK IN</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{formatTimeUI(item.checkIn)}</Text></View>
-                        <View style={styles.timeInfo}><Text style={styles.timeLabel}>CHECK OUT</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{formatTimeUI(item.checkOut)}</Text></View>
+                        <View style={styles.timeInfo}><Text style={styles.timeLabel}>CHECK OUT</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>
+                            {hasNoCheckout ? '--:-- --' : formatTimeUI(item.checkOut)}
+                        </Text></View>
                         <View style={[styles.timeInfo, {alignItems: 'flex-end'}]}>
                             <Text style={styles.timeLabel}>HOURS</Text>
-                            <Text style={{fontSize: 14, color: '#3B82F6', fontWeight: '900'}}>{formatWorkingHours(item.workingHours)}</Text>
+                            <Text style={{fontSize: 14, color: hasNoCheckout ? '#EA580C' : '#3B82F6', fontWeight: '900'}}>
+                                {hasNoCheckout ? 'Missing' : formatWorkingHours(item.workingHours)}
+                            </Text>
                         </View>
                     </View>
                 )}
+
+                {relatedReq ? (
+                    <View style={{marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderColor: colors.border}}>
+                        {relatedReq.status === 'pending' && (
+                            <View style={[styles.reqStatusBox, {backgroundColor: '#FEF3C7'}]}>
+                                <MaterialCommunityIcons name="clock-fast" size={16} color="#D97706" style={{marginRight: 6}} />
+                                <Text style={{color: '#D97706', fontSize: 12, fontWeight: 'bold'}}>Checkout Requested (Pending)</Text>
+                            </View>
+                        )}
+                        {relatedReq.status === 'approved' && (
+                            <View style={[styles.reqStatusBox, {backgroundColor: '#DCFCE7'}]}>
+                                <MaterialCommunityIcons name="check-decagram" size={16} color="#16A34A" style={{marginRight: 6}} />
+                                <Text style={{color: '#16A34A', fontSize: 12, fontWeight: 'bold'}}>
+                                    Checkout Approved {relatedReq.reviewedBy ? `by ${relatedReq.reviewedBy.firstName || relatedReq.reviewedBy.name || 'Admin'}` : ''}
+                                </Text>
+                            </View>
+                        )}
+                        {relatedReq.status === 'rejected' && canShowRequestButton && (
+                            <View>
+                                <View style={[styles.reqStatusBox, {backgroundColor: '#FEE2E2', marginBottom: 10}]}>
+                                    <MaterialCommunityIcons name="close-octagon" size={16} color="#DC2626" style={{marginRight: 6}} />
+                                    <Text style={{color: '#DC2626', fontSize: 12, fontWeight: 'bold'}}>Request Rejected: {relatedReq.rejectionReason || 'No reason provided'}</Text>
+                                </View>
+                                <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }}>
+                                   <MaterialCommunityIcons name="clock-out" size={16} color="#FFF" style={{marginRight: 6}} />
+                                   <Text style={styles.requestCheckoutBtnText}>Request Checkout Again</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
+                    </View>
+                ) : (
+                    canShowRequestButton && (
+                        <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }}>
+                           <MaterialCommunityIcons name="clock-out" size={16} color="#FFF" style={{marginRight: 6}} />
+                           <Text style={styles.requestCheckoutBtnText}>Request Checkout</Text>
+                        </TouchableOpacity>
+                    )
+                )}
             </View>
-        ))}
+        )})}
 
         {!loading && displayRecords.length === 0 && (
             <View style={{alignItems: 'center', marginTop: 50}}>
@@ -833,6 +814,43 @@ export default function AttendanceModule({ navigation }: any) {
             </View>
         )}
       </ScrollView>
+
+      {/* REQUEST CHECKOUT MODAL IMPLEMENTATION */}
+      <Modal visible={isCheckoutModalVisible} transparent animationType="slide">
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
+          <View style={[styles.requestCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
+            <View style={styles.modalHeader}>
+              <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                <MaterialCommunityIcons name="clock-check-outline" size={22} color={colors.primary} style={{marginRight: 8}} />
+                <Text style={[styles.mTitle, {color: colors.textMain}]}>Request Checkout</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsCheckoutModalVisible(false)}>
+                <Feather name="x" size={22} color={colors.textMain}/>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{padding: 20}}>
+              <Text style={styles.modalLabel}>Date</Text>
+              <View style={[styles.disabledInput, {backgroundColor: isLightMode ? '#F1F5F9' : '#1E293B', borderColor: colors.border}]}>
+                <Text style={{color: colors.textMain}}>{selectedAttendance ? getCardDateString(selectedAttendance.date || selectedAttendance.checkIn?.time) : ''}</Text>
+              </View>
+
+              <Text style={[styles.modalLabel, {marginTop: 15}]}>Checkout Time *</Text>
+              <TouchableOpacity style={[styles.disabledInput, {borderColor: colors.border}]} onPress={() => setShowRequestTimePicker(true)}>
+                <Text style={{color: colors.textMain}}>{formatTimeUI({time: requestForm.time})}</Text>
+                <Feather name="clock" size={16} color={colors.textSub} />
+              </TouchableOpacity>
+
+              <Text style={[styles.modalLabel, {marginTop: 15}]}>Reason *</Text>
+              <TextInput style={[styles.modalTextArea, {backgroundColor: colors.background, borderColor: colors.border, color: colors.textMain}]} placeholder="Why did you miss punching out?" placeholderTextColor={colors.textSub} multiline value={requestForm.reason} onChangeText={t => setRequestForm({...requestForm, reason: t})} />
+              
+              <TouchableOpacity style={[styles.submitRequestBtn, {backgroundColor: colors.primary}]} onPress={handleRequestCheckoutSubmit} disabled={requestLoading}>
+                {requestLoading ? <ActivityIndicator color="#fff" /> : <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Send Request</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {canDo('VIEW') && (
           <TouchableOpacity style={[styles.downloadFab, {backgroundColor: colors.primary}]} onPress={() => setIsDownloadModalVisible(true)}>
@@ -915,7 +933,7 @@ export default function AttendanceModule({ navigation }: any) {
                         </View>
                     </View>
 
-                    {formData.status !== 'absent' && formData.status !== 'holiday' && (
+                    {formData.status !== 'absent' && formData.status !== 'holiday' && formData.status !== 'missed' && (
                         <View style={{flexDirection: 'row', justifyContent:'space-between', marginTop: 15}}>
                             <View style={{width:'48%'}}><Text style={styles.label}>In Time</Text>
                                 <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowFormCheckIn(true)}><Text style={{color: colors.textMain}}>{formatTimeUI(formData.checkIn)}</Text></TouchableOpacity>
@@ -970,6 +988,7 @@ export default function AttendanceModule({ navigation }: any) {
       {showFormDate && <DateTimePicker value={formData.date} mode="date" onChange={(e,d) => {setShowFormDate(false); if(e.type === 'set' && d) setFormData({...formData, date:d});}}/>}
       {showFormCheckIn && <DateTimePicker value={formData.checkIn} mode="time" onChange={(e,d) => {setShowFormCheckIn(false); if(e.type === 'set' && d) setFormData({...formData, checkIn:d});}}/>}
       {showFormCheckOut && <DateTimePicker value={formData.checkOut} mode="time" onChange={(e,d) => {setShowFormCheckOut(false); if(e.type === 'set' && d) setFormData({...formData, checkOut:d});}}/>}
+      {showRequestTimePicker && <DateTimePicker value={requestForm.time} mode="time" onChange={(e, d) => { setShowRequestTimePicker(false); if(e.type === 'set' && d) setRequestForm({...requestForm, time: d}); }} />}
     </SafeAreaView>
   );
 }
@@ -1035,5 +1054,16 @@ const styles = StyleSheet.create({
   statusSheet: { padding: 20, borderTopLeftRadius: 25, borderTopRightRadius: 25 },
   sheetTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
   sheetItem: { paddingVertical: 15, borderBottomWidth: 1 },
-  sheetText: { fontSize: 15, textAlign: 'center', textTransform: 'capitalize' }
+  sheetText: { fontSize: 15, textAlign: 'center', textTransform: 'capitalize' },
+  
+  requestCheckoutBtn: { backgroundColor: '#6366F1', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 12, borderRadius: 12, marginTop: 15 },
+  requestCheckoutBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
+  reqStatusBox: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 10 },
+  requestCard: { width: '90%', borderRadius: 24, borderWidth: 1, overflow: 'hidden' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, alignItems: 'center', borderColor: '#F1F5F9' },
+  mTitle: { fontSize: 18, fontWeight: 'bold' },
+  modalLabel: { fontWeight: '600', fontSize: 13, color: '#64748B', marginBottom: 6 },
+  disabledInput: { borderWidth: 1, height: 48, borderRadius: 10, paddingHorizontal: 14, justifyContent: 'space-between', alignItems: 'center', flexDirection: 'row' },
+  modalTextArea: { borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 14, height: 90, textAlignVertical: 'top', marginTop: 4 },
+  submitRequestBtn: { height: 50, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginTop: 20 },
 });

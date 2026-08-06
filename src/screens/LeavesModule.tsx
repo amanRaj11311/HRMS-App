@@ -105,11 +105,13 @@ export default function LeavesModule({ navigation }: any) {
       const userCanViewAll = currentPerms.some((p: string) => p.trim().toUpperCase() === 'LEAVES:VIEW');
 
       if (userCanViewAll) {
+          // Admin/HR ke liye master route chalega
           const res = await axios.get(`${API_BASE}/leaves?limit=1000`, config);
           let data = Array.isArray(res.data?.data?.data) ? res.data.data.data : (Array.isArray(res.data?.data) ? res.data.data : []);
           setAllLeaves(data);
       } else {
-          const res = await axios.get(`${API_BASE}/leaves?employeeId=${empId}&limit=200`, config);
+          // 🚀 FIXED: Normal employee ke liye directly '/leaves/self' hit karein
+          const res = await axios.get(`${API_BASE}/leaves/self?limit=200`, config);
           let data = Array.isArray(res.data?.data?.data) ? res.data.data.data : (Array.isArray(res.data?.data) ? res.data.data : []);
           setMyLeaves(data);
           calculateBalances(data);

@@ -18,8 +18,28 @@ const getCleanAvatarUrl = (url: string) => {
     }
     return encodeURI(fullUrl); 
 };
+const SAVED_LOGIN_ENABLED = "savedLoginEnabled";
+const SAVED_LOGIN_EMAIL = "savedLoginEmail";
+const SAVED_LOGIN_PASSWORD = "savedLoginPassword";
 
+const SESSION_KEYS = [
+  "userToken",
+  "userId",
+  "employeeId",
+  "userName",
+  "userRole",
+  "userPermissions",
+  "keepLoggedIn",
+  "userDesignation",
+  "userDepartment",
+  "userDoj",
+  "userBankAcc",
+  "userBankName",
+  "userBankIfsc",
+  "userAvatar",
+];
 export default function GlobalAppBar({ navigation, onSearch, searchQuery }: any) {
+  
   const { colors, isLightMode } = useTheme();
   
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -78,17 +98,48 @@ export default function GlobalAppBar({ navigation, onSearch, searchQuery }: any)
   };
 
   // 🚀 NEW: Logout function
-  const handleLogout = () => {
-    setShowAvatarMenu(false);
-    Alert.alert("Logout", "Are you sure you want to log out?", [
-        { text: "Cancel", style: "cancel" }, 
-        { text: "Logout", style: "destructive", onPress: async () => {
-          await AsyncStorage.clear();
-          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-        }}
-    ]);
-  };
+const handleLogout = () => {
+  setShowAvatarMenu(false);
 
+  Alert.alert(
+    "Logout",
+    "Do you want to keep saved login details on this device?",
+    [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+      {
+        text: "Remove Details",
+        style: "destructive",
+        onPress: async () => {
+          await AsyncStorage.multiRemove([
+            ...SESSION_KEYS,
+            SAVED_LOGIN_ENABLED,
+            SAVED_LOGIN_EMAIL,
+            SAVED_LOGIN_PASSWORD,
+          ]);
+
+          navigation.reset({
+            index: 0,
+            routes: [{ name: "Login" }],
+          });
+        },
+      },
+      {
+        text: "Keep Details",
+        onPress: async () => {
+          await AsyncStorage.multiRemove(SESSION_KEYS);
+
+          navigation.reset({
+            index: 0,
+            routes: [{ name: "Login" }],
+          });
+        },
+      },
+    ]
+  );
+};
   if (isSearchActive) {
     return (
       <View style={[styles.container, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>

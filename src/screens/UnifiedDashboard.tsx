@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from "react";
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, 
-  StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl 
+  StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl, PermissionsAndroid 
 } from "react-native";
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage'; 
 import axios from 'axios'; 
+import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
+
 const { width } = Dimensions.get("window");
 
 export default function UnifiedDashboard({ navigation }: any) {
@@ -34,13 +36,23 @@ export default function UnifiedDashboard({ navigation }: any) {
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [monthlyStats, setMonthlyStats] = useState({ present: 0, late: 0, halfDay: 0, wfh: 0, absent: 0, total: 0 });
 
+  // 🚀 Added Dynamic Attendance States
+  const [attSettings, setAttSettings] = useState<any>(null);
+  const [punchLoading, setPunchLoading] = useState(false);
+
   useFocusEffect(
     React.useCallback(() => {
       const today = new Date();
       setCurrentDate(today.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
       
       const timer = setInterval(() => {
-          setLiveTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
+         setLiveTime(
+           new Date().toLocaleTimeString('en-IN', {
+             hour: 'numeric',
+             minute: '2-digit',
+             hour12: true,
+           }).toUpperCase()
+         );
       }, 1000);
       
       autoSyncAndInit();
@@ -55,7 +67,7 @@ export default function UnifiedDashboard({ navigation }: any) {
           const token = await AsyncStorage.getItem('userToken');
           axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
               headers: { Authorization: `Bearer ${token}` } 
-          }).catch(() => {}); // Global interceptor will handle token expiry
+          }).catch(() => {}); 
       } catch (e) {} 
   };
 
@@ -98,9 +110,14 @@ export default function UnifiedDashboard({ navigation }: any) {
     try {
       if (!isSilent) setLoading(true);
       const token = await AsyncStorage.getItem('userToken');
-      const empId = await AsyncStorage.getItem('employeeId'); 
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const ts = Date.now();
+
+      // 🚀 FETCH ATTENDANCE SETTINGS
+      const attSetRes = await axios.get(`${API_BASE}/settings/attendance?_t=${ts}`, config).catch(() => null);
+      if (attSetRes?.data?.data) {
+          setAttSettings(attSetRes.data.data);
+      }
 
       const annRes = await axios.get(`${API_BASE}/announcements?limit=50&_t=${ts}`, config).catch(() => null);
       let rawAnn = annRes?.data?.data?.data || annRes?.data?.data || [];
@@ -116,7 +133,7 @@ export default function UnifiedDashboard({ navigation }: any) {
       }
       setRecentActivities(activities);
 
-      const myAttRes = await axios.get(`${API_BASE}/attendance?employeeId=${empId}&limit=500&_t=${ts}`, config).catch(() => null);
+      const myAttRes = await axios.get(`${API_BASE}/attendance/self?limit=500&_t=${ts}`, config).catch(() => null);
       const myAttData = Array.isArray(myAttRes?.data?.data) ? myAttRes.data.data : [];
       
       const mappedAttData = myAttData.map((item: any) => {
@@ -215,9 +232,12 @@ export default function UnifiedDashboard({ navigation }: any) {
       setTodayRecord(todayRec);
 
       if (isAdminUser) {
+          const pad = (n: number) => n < 10 ? '0' + n : n;
+          const todayDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
           const [empRes, allAttRes, leaveRes] = await Promise.all([
               axios.get(`${API_BASE}/employees?limit=500&sort=-createdAt&_t=${ts}`, config).catch(() => null),
-              axios.get(`${API_BASE}/attendance?limit=500&_t=${ts}`, config).catch(() => null),
+              axios.get(`${API_BASE}/attendance?date=${todayDateStr}&limit=500&_t=${ts}`, config).catch(() => null),
               axios.get(`${API_BASE}/leaves?limit=500&_t=${ts}`, config).catch(() => null)
           ]);
 
@@ -284,6 +304,97 @@ export default function UnifiedDashboard({ navigation }: any) {
       ]);
   };
 
+  // 🚀 MATH FUNCTION: Haversine distance calculator for Geo-fence
+  const getDistanceFromLatLonInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c * 1000;
+  };
+
+  // 🚀 PUNCH ATTENDANCE LOGIC
+  const handlePunch = async () => {
+    const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
+    const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
+    const myEmpId = await AsyncStorage.getItem('employeeId');
+
+    const executePunch = async (locationPayload: any = null) => {
+        try {
+            setPunchLoading(true);
+            const token = await AsyncStorage.getItem('userToken');
+            const payload: any = {
+                employeeId: myEmpId,
+                method: 'mobile'
+            };
+            if (locationPayload) payload.location = locationPayload;
+
+            await axios.post(`${API_BASE}${endpoint}`, payload, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+
+            Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
+            await fetchData(isPrivileged, true);
+        } catch (e: any) {
+            Alert.alert("Error", e.response?.data?.message || "Failed to mark attendance.");
+        } finally {
+            setPunchLoading(false);
+        }
+    };
+
+    if (attSettings?.locationEnabled) {
+        if (Platform.OS === 'android') {
+            try {
+                const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+                if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+                    return Alert.alert("Permission Denied", "Location permission is required for attendance.");
+                }
+            } catch (err) {
+                console.warn(err);
+            }
+        }
+
+        Geolocation.getCurrentPosition(
+            (position: any) => {
+                const userLat = position.coords.latitude;
+                const userLng = position.coords.longitude;
+                const locations = attSettings.locations || [];
+
+                let isWithinRange = false;
+                if (locations.length > 0) {
+                    for (let loc of locations) {
+                        const dist = getDistanceFromLatLonInMeters(userLat, userLng, loc.latitude, loc.longitude);
+                        if (dist <= (loc.radiusMeters || 100)) {
+                            isWithinRange = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!isWithinRange && locations.length > 0) {
+                    Alert.alert("Out of Range", "You are away from the office location. Cannot mark attendance.");
+                    return;
+                } else if (!isWithinRange && locations.length === 0) {
+                    Alert.alert("Configuration Error", "Location restriction is enabled but no office locations are configured.");
+                    return;
+                }
+
+                executePunch({ latitude: userLat, longitude: userLng });
+            },
+            (error: any) => {
+                Alert.alert("Location Error", error.message || "Failed to fetch current location. Make sure GPS is enabled.");
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+        );
+    } else {
+        executePunch();
+    }
+  };
+
   const hasPerm = (resourceKey: string) => {
       if (!resourceKey) return true;
       const keys = resourceKey.split('|'); 
@@ -294,7 +405,15 @@ export default function UnifiedDashboard({ navigation }: any) {
     const hour = new Date().getHours();
     return hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
   };
-  const formatTime = (iso: any) => iso ? new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
+  
+  const formatTime = (iso: any) => {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleTimeString('en-IN', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).toUpperCase();
+  };
 
   const QUICK_LINKS = [
     { label: 'Attendance', icon: 'fingerprint', color: '#10B981', route: 'Attendance', perm: 'ATTENDANCE' },
@@ -459,10 +578,27 @@ export default function UnifiedDashboard({ navigation }: any) {
                           <View style={[styles.divider, {backgroundColor: colors.border}]} /><View style={styles.timeBox}><Text style={styles.timeLabel}>CHECK OUT</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{formatTime(todayRecord?.checkOut?.time)}</Text></View>
                           <View style={[styles.divider, {backgroundColor: colors.border}]} /><View style={styles.timeBox}><Text style={styles.timeLabel}>HOURS</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{todayRecord?.workingHours ? `${parseFloat(todayRecord.workingHours).toFixed(1)}h` : '—'}</Text></View>
                        </View>
-                       <TouchableOpacity style={[styles.punchBtn, todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? {backgroundColor: '#EF4444'} : {}]} onPress={() => Alert.alert("Biometric Only", "Please use office machine to punch.")}>
-                            <MaterialCommunityIcons name={todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "logout" : "login"} size={22} color="#fff" />
-                            <Text style={styles.punchBtnText}>{todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "Check Out" : "Check In"}</Text>
-                       </TouchableOpacity>
+                       
+                       {/* 🚀 FIXED: Dynamic Button based on Backend Check-in Flag */}
+                       {attSettings && attSettings.checkinEnabled === false ? (
+                           <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.1)', padding: 12, borderRadius: 12, alignItems: 'center' }}>
+                               <MaterialCommunityIcons name="information" size={20} color="#6366F1" style={{marginRight: 10}} />
+                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '500'}}>Self check-in/out is disabled by admin. Contact HR/admin to mark attendance.</Text>
+                           </View>
+                       ) : (
+                           <TouchableOpacity 
+                               style={[styles.punchBtn, todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? {backgroundColor: '#EF4444'} : {}]} 
+                               onPress={handlePunch}
+                               disabled={punchLoading}
+                           >
+                               {punchLoading ? <ActivityIndicator color="#fff" /> : (
+                                   <>
+                                      <MaterialCommunityIcons name={todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "logout" : "login"} size={22} color="#fff" />
+                                      <Text style={styles.punchBtnText}>{todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "Check Out" : "Check In"}</Text>
+                                   </>
+                               )}
+                           </TouchableOpacity>
+                       )}
                     </View>
                 </View>
             )}
@@ -624,7 +760,7 @@ const styles = StyleSheet.create({
   fabMenuContainer: { position: 'absolute', bottom: 100, right: 25, alignItems: 'flex-end' },
   fabMenuItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   fabMenuText: { color: '#fff', fontSize: 14, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, marginRight: 10, overflow: 'hidden' },
-  fabMenuIcon: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', elevation: 3 },
+  fabMenuIcon: { width: 44, height: 43, borderRadius: 22, justifyContent: 'center', alignItems: 'center', elevation: 3 },
 
   graphCountText: { color: '#fff', fontSize: 11, fontWeight: 'bold' }
 });
