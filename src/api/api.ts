@@ -3,7 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Alert } from "react-native";
 import { replace } from "./NavigationService";
 
-export const API_BASE = "https://hrms.dcstechnosis.com/api";
+export const API_BASE = "https://dhruv.hrms.dcstechnosis.com/api";
 
 let isSessionExpiredAlertVisible = false;
 
