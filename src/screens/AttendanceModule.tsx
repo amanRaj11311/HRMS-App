@@ -14,6 +14,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme';
 import GlobalAppBar from '../components/GlobalAppBar'; 
 
+// 🚀 photo proof viewer now lives here (moved from Dashboard)
+import PhotoProofModal from '../screens/photofrommodal';
+
 import { API_BASE } from '../api/api';
 
 const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday', 'missed', 'overtime'];
@@ -75,6 +78,10 @@ export default function AttendanceModule({ navigation }: any) {
   const [showDlEmpModal, setShowDlEmpModal] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
+  // 🚀 NEW: photo proof modal state (moved here from Dashboard)
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [selectedPhotoRecord, setSelectedPhotoRecord] = useState<any>(null);
+
   const getInitialTime = (hours: number, minutes = 0) => {
     const d = new Date();
     d.setHours(hours, minutes, 0, 0);
@@ -123,12 +130,12 @@ export default function AttendanceModule({ navigation }: any) {
 
   const getStatusStyle = (status: string) => {
       const s = String(status || "").toLowerCase();
-      if (s === 'present' || s === 'overtime') return { bg: '#DCFCE7', text: '#16A34A' }; 
-      if (s === 'late') return { bg: '#FEF3C7', text: '#D97706' };
-      if (s === 'absent') return { bg: '#FEE2E2', text: '#DC2626' };
-      if (s === 'half-day' || s === 'halfday') return { bg: '#DBEAFE', text: '#2563EB' };
-      if (s === 'missed') return { bg: '#FEE2E2', text: '#EA580C' };
-      return { bg: '#F1F5F9', text: '#64748B' };
+      if (s === 'present' || s === 'overtime') return { bg: '#DCFCE7', text: '#16A34A', dot: '#16A34A' }; 
+      if (s === 'late') return { bg: '#FEF3C7', text: '#D97706', dot: '#D97706' };
+      if (s === 'absent') return { bg: '#FEE2E2', text: '#DC2626', dot: '#DC2626' };
+      if (s === 'half-day' || s === 'halfday') return { bg: '#DBEAFE', text: '#2563EB', dot: '#2563EB' };
+      if (s === 'missed') return { bg: '#FEE2E2', text: '#EA580C', dot: '#EA580C' };
+      return { bg: '#F1F5F9', text: '#64748B', dot: '#64748B' };
   };
 
   const canDo = (action: string) => permissions.includes(`ATTENDANCE:${action.toUpperCase()}`);
@@ -607,7 +614,7 @@ export default function AttendanceModule({ navigation }: any) {
       setIsAddModalVisible(true);
   };
 
-  // 🚀 FIXED: DYNAMIC KPI CALCULATION FROM CORRECTED FRONTEND DATA
+  // 🚀 DYNAMIC KPI CALCULATION FROM CORRECTED FRONTEND DATA
   let totalPresentCount = 0;
   let absentCountLocal = 0;
   let lateCountLocal = 0;
@@ -653,15 +660,18 @@ export default function AttendanceModule({ navigation }: any) {
         <GlobalAppBar navigation={navigation} showSearch={true} searchQuery={searchQuery} onSearchChange={setSearchQuery} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#3B82F6" />}>
         <View style={styles.header}>
-            <View>
-              <Text style={[styles.title, {color: colors.textMain}]}>{canDo('VIEW') ? "Team Attendance" : "My Attendance"}</Text>
-              <Text style={{color: colors.textSub, fontSize: 11}}>{canDo('VIEW') ? "Managing Organization" : "Your personal records"}</Text>
+            <View style={{flexDirection: 'row', alignItems: 'center'}}>
+              <View style={[styles.titleAccent, {backgroundColor: colors.primary || '#3B82F6'}]} />
+              <View>
+                <Text style={[styles.title, {color: colors.textMain}]}>{canDo('VIEW') ? "Team Attendance" : "My Attendance"}</Text>
+                <Text style={{color: colors.textSub, fontSize: 11, marginTop: 2, fontWeight: '500'}}>{canDo('VIEW') ? "Managing Organization" : "Your personal records"}</Text>
+              </View>
             </View>
             <View style={{flexDirection: 'row'}}>
                 {canDo('CREATE') && (
-                    <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
+                    <TouchableOpacity style={styles.addBtn} onPress={openAdd} activeOpacity={0.85}>
                         <Feather name="plus" size={16} color="#FFF" /><Text style={styles.addBtnText}>Add</Text>
                     </TouchableOpacity>
                 )}
@@ -669,17 +679,18 @@ export default function AttendanceModule({ navigation }: any) {
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 20}}>
-            <KpiCard label="Total Present" val={totalPresentCount} color="#10B981" icon="account-check" />
-            <KpiCard label="Absent" val={absentCountLocal} color="#EF4444" icon="account-remove" />
-            <KpiCard label="Late" val={lateCountLocal} color="#F59E0B" icon="clock-alert" />
-            <KpiCard label="Half Day" val={halfDayCountLocal} color="#3B82F6" icon="circle-half-full" />
-            <KpiCard label="Total OT (Hrs)" val={otDisplayFormatted} color="#8B5CF6" icon="clock-plus-outline" />
+            <KpiCard label="Total Present" val={totalPresentCount} color="#10B981" bg="rgba(16,185,129,0.12)" icon="account-check" />
+            <KpiCard label="Absent" val={absentCountLocal} color="#EF4444" bg="rgba(239,68,68,0.12)" icon="account-remove" />
+            <KpiCard label="Late" val={lateCountLocal} color="#F59E0B" bg="rgba(245,158,11,0.12)" icon="clock-alert" />
+            <KpiCard label="Half Day" val={halfDayCountLocal} color="#3B82F6" bg="rgba(59,130,246,0.12)" icon="circle-half-full" />
+            <KpiCard label="Total OT (Hrs)" val={otDisplayFormatted} color="#8B5CF6" bg="rgba(139,92,246,0.12)" icon="clock-plus-outline" isLast />
         </ScrollView>
 
         <View style={styles.filterRow}>
             <TouchableOpacity 
                 style={[styles.filterPill, { borderColor: colors.primary, backgroundColor: colors.primary + '10' }]} 
                 onPress={() => setShowFilterDatePicker(true)}
+                activeOpacity={0.8}
             >
                 <Text style={[styles.filterText, {color: colors.primary}]}>
                     {canDo('VIEW') ? getSafeDateString(filterDate) : `${MONTHS[filterDate.getMonth()]} ${filterDate.getFullYear()}`}
@@ -691,6 +702,7 @@ export default function AttendanceModule({ navigation }: any) {
                 style={[styles.filterPill, { borderColor: '#10B981', backgroundColor: '#10B98110', paddingHorizontal: 12 }]} 
                 onPress={() => syncBiometric(false)}
                 disabled={isSyncing}
+                activeOpacity={0.8}
             >
                 {isSyncing ? (
                     <ActivityIndicator size="small" color="#10B981" />
@@ -700,12 +712,12 @@ export default function AttendanceModule({ navigation }: any) {
             </TouchableOpacity>
 
             {canDo('VIEW') && (
-                <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border, flex: 1}]} onPress={() => setShowEmpModal(true)}>
+                <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border, backgroundColor: colors.cardBg, flex: 1}]} onPress={() => setShowEmpModal(true)} activeOpacity={0.8}>
                     <Text style={[styles.filterText, {color: colors.textMain}]} numberOfLines={1}>{filterEmpName}</Text>
                     <Feather name="chevron-down" size={14} color={colors.textSub} />
                 </TouchableOpacity>
             )}
-            <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border}]} onPress={() => setShowStatusModal(true)}><Text style={[styles.filterText, {color: colors.textMain}]}>{filterStatus}</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.filterPill, {borderColor: colors.border, backgroundColor: colors.cardBg}]} onPress={() => setShowStatusModal(true)} activeOpacity={0.8}><Text style={[styles.filterText, {color: colors.textMain}]}>{filterStatus}</Text></TouchableOpacity>
         </View>
 
         {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{marginTop: 50}}/> : displayRecords.map((item, index) => {
@@ -722,12 +734,16 @@ export default function AttendanceModule({ navigation }: any) {
             const canShowRequestButton = hasNoCheckout && isPastDay && !canDo('VIEW');
             const relatedReq = item._relatedReq;
             const statusText = item.status || 'present';
+            const hasPhotoProof = !!(item.checkIn?.photoProof || item.checkOut?.photoProof);
+            const statusStyle = getStatusStyle(statusText);
 
             return (
-            <View key={index} style={[styles.attCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
+            <View key={index} style={[styles.attCard, {backgroundColor: colors.cardBg, borderColor: colors.border, borderLeftColor: statusStyle.dot}]}>
                 <View style={styles.cardHeader}>
                     <View style={styles.userInfo}>
-                        <View style={styles.avatar}><Text style={styles.avatarText}>{(item.employeeId?.userId?.firstName || 'U').charAt(0)}</Text></View>
+                        <View style={styles.avatarRing}>
+                          <View style={styles.avatar}><Text style={styles.avatarText}>{(item.employeeId?.userId?.firstName || 'U').charAt(0)}</Text></View>
+                        </View>
                         <View>
                             <Text style={[styles.userName, {color: colors.textMain}]}>{item.employeeId?.userId?.firstName} {item.employeeId?.userId?.lastName}</Text>
                             <Text style={styles.userSub}>{getCardDateString(item.date || item.checkIn?.time || filterDate)}</Text>
@@ -735,17 +751,29 @@ export default function AttendanceModule({ navigation }: any) {
                     </View>
                     <View style={{flexDirection: 'row', alignItems: 'center'}}>
                         
-                        <View style={[styles.statusTag, {backgroundColor: getStatusStyle(statusText).bg}]}>
-                            <Text style={[styles.statusTagText, {color: getStatusStyle(statusText).text}]}>{statusText}</Text>
+                        <View style={[styles.statusTag, {backgroundColor: statusStyle.bg}]}>
+                            <View style={[styles.statusTagDot, {backgroundColor: statusStyle.dot}]} />
+                            <Text style={[styles.statusTagText, {color: statusStyle.text}]}>{statusText}</Text>
                         </View>
 
+                        {/* 🚀 NEW: photo proof quick-view button */}
+                        {hasPhotoProof && (
+                            <TouchableOpacity
+                                style={[styles.editBtn, {backgroundColor: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.25)'}]}
+                                onPress={() => { setSelectedPhotoRecord(item); setShowPhotoModal(true); }}
+                                activeOpacity={0.75}
+                            >
+                                <MaterialCommunityIcons name="camera-outline" size={15} color={colors.primary} />
+                            </TouchableOpacity>
+                        )}
+
                         {canDo('UPDATE') && item.status !== 'absent' && (
-                            <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(item)}>
+                            <TouchableOpacity style={[styles.editBtn, {backgroundColor: 'rgba(100,116,139,0.08)', borderColor: 'rgba(100,116,139,0.2)'}]} onPress={() => openEdit(item)} activeOpacity={0.75}>
                                 <Feather name="edit-2" size={14} color={colors.textSub} />
                             </TouchableOpacity>
                         )}
                         {canDo('DELETE') && item.status !== 'absent' && (
-                            <TouchableOpacity style={styles.editBtn} onPress={() => deleteRecord(item._id)}>
+                            <TouchableOpacity style={[styles.editBtn, {backgroundColor: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.2)'}]} onPress={() => deleteRecord(item._id)} activeOpacity={0.75}>
                                 <Feather name="trash-2" size={14} color="#EF4444" />
                             </TouchableOpacity>
                         )}
@@ -789,7 +817,7 @@ export default function AttendanceModule({ navigation }: any) {
                                     <MaterialCommunityIcons name="close-octagon" size={16} color="#DC2626" style={{marginRight: 6}} />
                                     <Text style={{color: '#DC2626', fontSize: 12, fontWeight: 'bold'}}>Request Rejected: {relatedReq.rejectionReason || 'No reason provided'}</Text>
                                 </View>
-                                <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }}>
+                                <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }} activeOpacity={0.85}>
                                    <MaterialCommunityIcons name="clock-out" size={16} color="#FFF" style={{marginRight: 6}} />
                                    <Text style={styles.requestCheckoutBtnText}>Request Checkout Again</Text>
                                 </TouchableOpacity>
@@ -798,7 +826,7 @@ export default function AttendanceModule({ navigation }: any) {
                     </View>
                 ) : (
                     canShowRequestButton && (
-                        <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }}>
+                        <TouchableOpacity style={styles.requestCheckoutBtn} onPress={() => { setSelectedAttendance(item); setIsCheckoutModalVisible(true); }} activeOpacity={0.85}>
                            <MaterialCommunityIcons name="clock-out" size={16} color="#FFF" style={{marginRight: 6}} />
                            <Text style={styles.requestCheckoutBtnText}>Request Checkout</Text>
                         </TouchableOpacity>
@@ -809,8 +837,10 @@ export default function AttendanceModule({ navigation }: any) {
 
         {!loading && displayRecords.length === 0 && (
             <View style={{alignItems: 'center', marginTop: 50}}>
-                <Feather name="inbox" size={50} color={colors.border} />
-                <Text style={{ textAlign: 'center', color: colors.textSub, marginTop: 12, fontSize: 14, fontWeight: '600' }}>No records found for the selected filter.</Text>
+                <View style={styles.emptyIconWrap}>
+                    <Feather name="inbox" size={40} color={colors.border} />
+                </View>
+                <Text style={{ textAlign: 'center', color: colors.textSub, marginTop: 14, fontSize: 14, fontWeight: '600' }}>No records found for the selected filter.</Text>
             </View>
         )}
       </ScrollView>
@@ -819,9 +849,11 @@ export default function AttendanceModule({ navigation }: any) {
       <Modal visible={isCheckoutModalVisible} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
           <View style={[styles.requestCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
-            <View style={styles.modalHeader}>
+            <View style={[styles.modalHeader, {borderColor: colors.border}]}>
               <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                <MaterialCommunityIcons name="clock-check-outline" size={22} color={colors.primary} style={{marginRight: 8}} />
+                <View style={styles.modalHeaderIconWrap}>
+                  <MaterialCommunityIcons name="clock-check-outline" size={20} color={colors.primary} />
+                </View>
                 <Text style={[styles.mTitle, {color: colors.textMain}]}>Request Checkout</Text>
               </View>
               <TouchableOpacity onPress={() => setIsCheckoutModalVisible(false)}>
@@ -836,7 +868,7 @@ export default function AttendanceModule({ navigation }: any) {
               </View>
 
               <Text style={[styles.modalLabel, {marginTop: 15}]}>Checkout Time *</Text>
-              <TouchableOpacity style={[styles.disabledInput, {borderColor: colors.border}]} onPress={() => setShowRequestTimePicker(true)}>
+              <TouchableOpacity style={[styles.disabledInput, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowRequestTimePicker(true)}>
                 <Text style={{color: colors.textMain}}>{formatTimeUI({time: requestForm.time})}</Text>
                 <Feather name="clock" size={16} color={colors.textSub} />
               </TouchableOpacity>
@@ -844,7 +876,7 @@ export default function AttendanceModule({ navigation }: any) {
               <Text style={[styles.modalLabel, {marginTop: 15}]}>Reason *</Text>
               <TextInput style={[styles.modalTextArea, {backgroundColor: colors.background, borderColor: colors.border, color: colors.textMain}]} placeholder="Why did you miss punching out?" placeholderTextColor={colors.textSub} multiline value={requestForm.reason} onChangeText={t => setRequestForm({...requestForm, reason: t})} />
               
-              <TouchableOpacity style={[styles.submitRequestBtn, {backgroundColor: colors.primary}]} onPress={handleRequestCheckoutSubmit} disabled={requestLoading}>
+              <TouchableOpacity style={[styles.submitRequestBtn, {backgroundColor: colors.primary}]} onPress={handleRequestCheckoutSubmit} disabled={requestLoading} activeOpacity={0.85}>
                 {requestLoading ? <ActivityIndicator color="#fff" /> : <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Send Request</Text>}
               </TouchableOpacity>
             </View>
@@ -853,16 +885,21 @@ export default function AttendanceModule({ navigation }: any) {
       </Modal>
 
       {canDo('VIEW') && (
-          <TouchableOpacity style={[styles.downloadFab, {backgroundColor: colors.primary}]} onPress={() => setIsDownloadModalVisible(true)}>
+          <TouchableOpacity style={[styles.downloadFab, {backgroundColor: colors.primary}]} onPress={() => setIsDownloadModalVisible(true)} activeOpacity={0.85}>
               <MaterialCommunityIcons name="file-excel" size={24} color="#fff" />
           </TouchableOpacity>
       )}
 
       <Modal visible={isDownloadModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-            <View style={[styles.modalContent, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: 24, borderRadius: 20 }]}>
-                <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15}}>
-                    <Text style={{fontSize: 18, fontWeight: 'bold', color: colors.textMain}}>Download Report</Text>
+            <View style={[styles.modalContentCentered, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: 24, borderRadius: 26 }]}>
+                <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15}}>
+                    <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                        <View style={[styles.modalHeaderIconWrap, {backgroundColor: 'rgba(16,185,129,0.12)'}]}>
+                            <MaterialCommunityIcons name="file-excel-outline" size={20} color="#10B981" />
+                        </View>
+                        <Text style={{fontSize: 18, fontWeight: '900', color: colors.textMain}}>Download Report</Text>
+                    </View>
                     <TouchableOpacity onPress={() => setIsDownloadModalVisible(false)}>
                         <MaterialCommunityIcons name="close" size={24} color={colors.textSub} />
                     </TouchableOpacity>
@@ -871,29 +908,30 @@ export default function AttendanceModule({ navigation }: any) {
                 <Text style={{color: colors.textSub, marginBottom: 20, fontSize: 13}}>Select date range and employee to generate custom excel report.</Text>
                 
                 <Text style={styles.label}>Select Employee</Text>
-                <TouchableOpacity style={[styles.input, {borderColor: colors.border, marginBottom: 15}]} onPress={() => setShowDlEmpModal(true)}>
+                <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background, marginBottom: 15}]} onPress={() => setShowDlEmpModal(true)}>
                     <Text style={{color: colors.textMain}}>{dlEmpName}</Text>
                 </TouchableOpacity>
 
                 <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 25}}>
                     <View style={{width: '48%'}}>
                         <Text style={styles.label}>Start Date</Text>
-                        <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowDlStartPicker(true)}>
+                        <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowDlStartPicker(true)}>
                             <Text style={{color: colors.textMain}}>{getSafeDateString(dlStartDate)}</Text>
                         </TouchableOpacity>
                     </View>
                     <View style={{width: '48%'}}>
                         <Text style={styles.label}>End Date</Text>
-                        <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowDlEndPicker(true)}>
+                        <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowDlEndPicker(true)}>
                             <Text style={{color: colors.textMain}}>{getSafeDateString(dlEndDate)}</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
 
                 <TouchableOpacity 
-                    style={{backgroundColor: '#10B981', paddingVertical: 14, borderRadius: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center'}}
+                    style={styles.generateBtn}
                     onPress={handleDownloadReport}
                     disabled={isDownloading}
+                    activeOpacity={0.85}
                 >
                     {isDownloading ? <ActivityIndicator color="#fff" /> : (
                         <>
@@ -910,24 +948,24 @@ export default function AttendanceModule({ navigation }: any) {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex: 1}}>
           <View style={styles.modalOverlay}>
             <View style={[styles.modalContent, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
-                <View style={styles.modalNav}>
-                    <Text style={{fontSize: 18, fontWeight: 'bold', color: colors.textMain}}>{isEditing ? 'Update' : 'New'} Record</Text>
+                <View style={[styles.modalNav, {borderColor: colors.border}]}>
+                    <Text style={{fontSize: 18, fontWeight: '900', color: colors.textMain}}>{isEditing ? 'Update' : 'New'} Record</Text>
                     <TouchableOpacity onPress={() => setIsAddModalVisible(false)}><Feather name="x" size={24} color={colors.textMain}/></TouchableOpacity>
                 </View>
                 <ScrollView style={{padding: 20}}>
                     <Text style={styles.label}>Employee *</Text>
-                    <TouchableOpacity style={[styles.input, {borderColor: colors.border, marginBottom: 15}]} onPress={() => !isEditing && setShowFormEmp(true)} disabled={isEditing}>
+                    <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background, marginBottom: 15}]} onPress={() => !isEditing && setShowFormEmp(true)} disabled={isEditing}>
                         <Text style={{color: colors.textMain}}>{formData.employeeName}</Text>
                     </TouchableOpacity>
 
                     <View style={{flexDirection: 'row', justifyContent:'space-between', marginTop: 15}}>
                         <View style={{width:'48%'}}><Text style={styles.label}>Date *</Text>
-                            <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowFormDate(true)}>
+                            <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowFormDate(true)}>
                                 <Text style={{color: colors.textMain}}>{getSafeDateString(formData.date)}</Text>
                             </TouchableOpacity>
                         </View>
                         <View style={{width:'48%'}}><Text style={styles.label}>Status</Text>
-                            <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowFormStatus(true)}>
+                            <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowFormStatus(true)}>
                                 <Text style={{color: colors.textMain, textTransform: 'capitalize'}}>{formData.status}</Text>
                             </TouchableOpacity>
                         </View>
@@ -936,16 +974,16 @@ export default function AttendanceModule({ navigation }: any) {
                     {formData.status !== 'absent' && formData.status !== 'holiday' && formData.status !== 'missed' && (
                         <View style={{flexDirection: 'row', justifyContent:'space-between', marginTop: 15}}>
                             <View style={{width:'48%'}}><Text style={styles.label}>In Time</Text>
-                                <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowFormCheckIn(true)}><Text style={{color: colors.textMain}}>{formatTimeUI(formData.checkIn)}</Text></TouchableOpacity>
+                                <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowFormCheckIn(true)}><Text style={{color: colors.textMain}}>{formatTimeUI(formData.checkIn)}</Text></TouchableOpacity>
                             </View>
                             <View style={{width:'48%'}}><Text style={styles.label}>Out Time</Text>
-                                <TouchableOpacity style={[styles.input, {borderColor: colors.border}]} onPress={() => setShowFormCheckOut(true)}><Text style={{color: colors.textMain}}>{formatTimeUI(formData.checkOut)}</Text></TouchableOpacity>
+                                <TouchableOpacity style={[styles.input, {borderColor: colors.border, backgroundColor: colors.background}]} onPress={() => setShowFormCheckOut(true)}><Text style={{color: colors.textMain}}>{formatTimeUI(formData.checkOut)}</Text></TouchableOpacity>
                             </View>
                         </View>
                     )}
                 </ScrollView>
-                <View style={styles.modalFooter}>
-                    <TouchableOpacity style={styles.submitBtn} onPress={saveRecord} disabled={formLoading}>
+                <View style={[styles.modalFooter, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
+                    <TouchableOpacity style={styles.submitBtn} onPress={saveRecord} disabled={formLoading} activeOpacity={0.85}>
                         {formLoading ? <ActivityIndicator color="#fff"/> : <Text style={{color:'#fff', fontWeight:'bold'}}>SUBMIT RECORD</Text>}
                     </TouchableOpacity>
                 </View>
@@ -965,6 +1003,15 @@ export default function AttendanceModule({ navigation }: any) {
         displayKey={(i:any) => `${i.userId?.firstName || ''} ${i.userId?.lastName || ''}`} 
         onSelect={(v:any) => setFormData({...formData, employeeId: v._id, employeeName: `${v.userId?.firstName} ${v.userId?.lastName}`})} 
         onClose={()=>setShowFormEmp(false)} colors={colors} 
+      />
+
+      {/* 🚀 NEW: photo proof viewer — moved here from Dashboard, opens per attendance record */}
+      <PhotoProofModal
+          visible={showPhotoModal}
+          onClose={() => setShowPhotoModal(false)}
+          checkInPhoto={selectedPhotoRecord?.checkIn?.photoProof}
+          checkOutPhoto={selectedPhotoRecord?.checkOut?.photoProof}
+          employeeName={`${selectedPhotoRecord?.employeeId?.userId?.firstName || ''} ${selectedPhotoRecord?.employeeId?.userId?.lastName || ''}`.trim() || myName}
       />
       
       {showFilterDatePicker && <DateTimePicker value={filterDate} mode="date" onChange={(e, d) => { 
@@ -997,6 +1044,7 @@ const DropdownModal = ({ visible, onClose, title, data, onSelect, displayKey, co
   <Modal visible={visible} transparent animationType="fade">
       <TouchableOpacity style={styles.modalOverlay} onPress={onClose} activeOpacity={1}>
           <View style={[styles.statusSheet, { backgroundColor: colors.cardBg, borderColor: colors.border, borderWidth: 1 }]}>
+              <View style={styles.sheetHandle} />
               <Text style={[styles.sheetTitle, { color: colors.textMain }]}>{title}</Text>
               <ScrollView style={{maxHeight: 300}}>{data.map((item: any, index: number) => (<TouchableOpacity key={index} style={[styles.sheetItem, {borderBottomColor: colors.border}]} onPress={() => { onSelect(item); onClose(); }}><Text style={[styles.sheetText, { color: colors.textMain }]}>{typeof displayKey === 'function' ? displayKey(item) : item}</Text></TouchableOpacity>))}</ScrollView>
           </View>
@@ -1004,66 +1052,74 @@ const DropdownModal = ({ visible, onClose, title, data, onSelect, displayKey, co
   </Modal>
 );
 
-const KpiCard = ({label, val, color, icon}: any) => (
-    <View style={[styles.kpiCard, {borderLeftColor: color}]}>
-        <View style={{flexDirection: 'row', alignItems: 'center'}}><MaterialCommunityIcons name={icon} size={16} color={color} style={{marginRight: 6}} /><Text style={styles.kpiLabel}>{label}</Text></View>
+// 🎨 Premium KPI pill — tinted icon tile, colored accent border, glow shadow
+const KpiCard = ({label, val, color, bg, icon, isLast}: any) => (
+    <View style={[styles.kpiCard, {borderLeftColor: color, shadowColor: color}, isLast && {marginRight: 4}]}>
+        <View style={[styles.kpiIconTile, {backgroundColor: bg}]}>
+            <MaterialCommunityIcons name={icon} size={17} color={color} />
+        </View>
         <Text style={[styles.kpiVal, {color: '#1E293B'}]}>{val}</Text>
+        <Text style={styles.kpiLabel}>{label}</Text>
     </View>
 );
 
 const styles = StyleSheet.create({
-  smartPunchBtnNew: { backgroundColor: '#6366F1', padding: 16, borderRadius: 16, marginBottom: 16, elevation: 3 },
-  punchContent: { flexDirection: 'row', alignItems: 'center' },
-  iconCircle: { width: 45, height: 45, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  punchTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  punchSubtitle: { color: '#E0E7FF', fontSize: 12 },
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 100 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  title: { fontSize: 24, fontWeight: '900' },
-  addBtn: { backgroundColor: '#3B82F6', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' },
-  addBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 12, marginLeft: 5 },
-  kpiCard: { backgroundColor: '#FFF', width: 120, padding: 15, borderRadius: 12, marginRight: 12, borderLeftWidth: 4, elevation: 2 },
-  kpiVal: { fontSize: 22, fontWeight: '900', marginTop: 10 },
-  kpiLabel: { fontSize: 12, color: '#64748B', fontWeight: 'bold' },
+  titleAccent: { width: 4, height: 30, borderRadius: 2, marginRight: 10 },
+  title: { fontSize: 24, fontWeight: '900', letterSpacing: -0.4 },
+  addBtn: { backgroundColor: '#3B82F6', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, flexDirection: 'row', alignItems: 'center', elevation: 4, shadowColor: '#3B82F6', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 7 },
+  addBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12, marginLeft: 5 },
+  kpiCard: { backgroundColor: '#FFF', width: 132, padding: 16, borderRadius: 18, marginRight: 12, borderLeftWidth: 4, elevation: 3, shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.14, shadowRadius: 9 },
+  kpiIconTile: { width: 34, height: 34, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
+  kpiVal: { fontSize: 22, fontWeight: '900', marginTop: 2, letterSpacing: -0.3 },
+  kpiLabel: { fontSize: 11, color: '#64748B', fontWeight: '700', marginTop: 4 },
   filterRow: { flexDirection: 'row', marginBottom: 15, justifyContent: 'space-between' },
-  filterPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, marginRight: 6 },
-  filterText: { fontSize: 12, fontWeight: '600' },
-  attCard: { padding: 16, borderRadius: 16, borderWidth: 1, marginBottom: 12, elevation: 1 },
+  filterPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 14, marginRight: 6 },
+  filterText: { fontSize: 12, fontWeight: '700' },
+  attCard: { padding: 17, borderRadius: 22, borderWidth: 1, borderLeftWidth: 4, marginBottom: 12, elevation: 3, shadowColor: '#000', shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.07, shadowRadius: 8 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   userInfo: { flexDirection: 'row', alignItems: 'center' },
-  avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  avatarText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-  userName: { fontSize: 14, fontWeight: 'bold' },
-  userSub: { fontSize: 10, color: '#94A3B8' },
-  statusTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  statusTagText: { fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase' },
-  editBtn: { padding: 6, borderRadius: 6, borderWidth: 1, borderColor: '#f1f5f9', marginLeft: 8 },
+  avatarRing: { width: 46, height: 46, borderRadius: 23, borderWidth: 2, borderColor: 'rgba(99,102,241,0.25)', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center', elevation: 2, shadowColor: '#6366F1', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.3, shadowRadius: 4 },
+  avatarText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
+  userName: { fontSize: 14, fontWeight: '800' },
+  userSub: { fontSize: 10, color: '#94A3B8', marginTop: 1, fontWeight: '500' },
+  statusTag: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 9 },
+  statusTagDot: { width: 6, height: 6, borderRadius: 3, marginRight: 5 },
+  statusTagText: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.2 },
+  editBtn: { padding: 7, borderRadius: 9, borderWidth: 1, marginLeft: 8 },
   cardBody: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, paddingTop: 15 },
   timeInfo: { flex: 1 },
-  timeLabel: { fontSize: 9, fontWeight: 'bold', color: '#94A3B8', marginBottom: 4 },
+  timeLabel: { fontSize: 9, fontWeight: '800', color: '#94A3B8', marginBottom: 5, letterSpacing: 0.4 },
   timeValue: { fontSize: 12, fontWeight: '800' },
-  downloadFab: { position: 'absolute', bottom: 30, right: 20, width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
+  emptyIconWrap: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(148,163,184,0.08)', justifyContent: 'center', alignItems: 'center' },
+  downloadFab: { position: 'absolute', bottom: 30, right: 20, width: 58, height: 58, borderRadius: 29, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalContent: { width: '90%', borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, maxHeight: '85%' },
+  modalContent: { width: '90%', borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, maxHeight: '85%' },
+  modalContentCentered: { width: '90%', borderWidth: 1 },
   modalNav: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, alignItems: 'center' },
-  modalFooter: { padding: 20, borderTopWidth: 1, backgroundColor: '#fff' },
-  submitBtn: { backgroundColor: '#3b82f6', height: 55, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
-  label: { marginBottom: 8, fontWeight: '600', fontSize: 13, color: '#64748B' },
-  input: { borderWidth: 1, minHeight: 48, borderRadius: 8, paddingHorizontal: 12, justifyContent: 'center' },
-  statusSheet: { padding: 20, borderTopLeftRadius: 25, borderTopRightRadius: 25 },
-  sheetTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
+  modalFooter: { padding: 20, borderTopWidth: 1 },
+  submitBtn: { backgroundColor: '#3b82f6', height: 55, borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#3B82F6', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 8 },
+  generateBtn: { backgroundColor: '#10B981', paddingVertical: 15, borderRadius: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', elevation: 4, shadowColor: '#10B981', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 8 },
+  label: { marginBottom: 8, fontWeight: '700', fontSize: 13, color: '#64748B' },
+  input: { borderWidth: 1, minHeight: 48, borderRadius: 14, paddingHorizontal: 14, justifyContent: 'center' },
+  statusSheet: { padding: 20, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(148,163,184,0.4)', alignSelf: 'center', marginBottom: 12 },
+  sheetTitle: { fontSize: 18, fontWeight: '800', marginBottom: 15, textAlign: 'center' },
   sheetItem: { paddingVertical: 15, borderBottomWidth: 1 },
   sheetText: { fontSize: 15, textAlign: 'center', textTransform: 'capitalize' },
   
-  requestCheckoutBtn: { backgroundColor: '#6366F1', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 12, borderRadius: 12, marginTop: 15 },
-  requestCheckoutBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
-  reqStatusBox: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 10 },
-  requestCard: { width: '90%', borderRadius: 24, borderWidth: 1, overflow: 'hidden' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, alignItems: 'center', borderColor: '#F1F5F9' },
-  mTitle: { fontSize: 18, fontWeight: 'bold' },
-  modalLabel: { fontWeight: '600', fontSize: 13, color: '#64748B', marginBottom: 6 },
-  disabledInput: { borderWidth: 1, height: 48, borderRadius: 10, paddingHorizontal: 14, justifyContent: 'space-between', alignItems: 'center', flexDirection: 'row' },
-  modalTextArea: { borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 14, height: 90, textAlignVertical: 'top', marginTop: 4 },
-  submitRequestBtn: { height: 50, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginTop: 20 },
+  requestCheckoutBtn: { backgroundColor: '#6366F1', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 13, borderRadius: 16, marginTop: 15, elevation: 3, shadowColor: '#6366F1', shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.3, shadowRadius: 6 },
+  requestCheckoutBtnText: { color: '#FFF', fontWeight: '800', fontSize: 13 },
+  reqStatusBox: { flexDirection: 'row', alignItems: 'center', padding: 11, borderRadius: 14 },
+  requestCard: { width: '90%', borderRadius: 28, borderWidth: 1, overflow: 'hidden' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, alignItems: 'center' },
+  modalHeaderIconWrap: { width: 34, height: 34, borderRadius: 11, backgroundColor: 'rgba(59,130,246,0.12)', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  mTitle: { fontSize: 18, fontWeight: '800' },
+  modalLabel: { fontWeight: '700', fontSize: 13, color: '#64748B', marginBottom: 6 },
+  disabledInput: { borderWidth: 1, height: 48, borderRadius: 14, paddingHorizontal: 14, justifyContent: 'space-between', alignItems: 'center', flexDirection: 'row' },
+  modalTextArea: { borderWidth: 1, borderRadius: 16, padding: 14, fontSize: 14, height: 90, textAlignVertical: 'top', marginTop: 4 },
+  submitRequestBtn: { height: 50, borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginTop: 20, elevation: 3, shadowColor: '#000', shadowOffset: {width:0, height:3}, shadowOpacity: 0.15, shadowRadius: 6 },
 });

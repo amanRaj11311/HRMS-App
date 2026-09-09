@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, 
-  StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl, PermissionsAndroid 
+  StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl, PermissionsAndroid, Image 
 } from "react-native";
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -11,6 +11,9 @@ import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
+
+// 🚀 geo-tagged selfie camera (photo proof viewer now lives in Attendance module)
+import GeoTagAttendanceCamera from '../screens/GeoAttendanceCamera'; // adjust path to wherever you place it
 
 const { width } = Dimensions.get("window");
 
@@ -36,9 +39,15 @@ export default function UnifiedDashboard({ navigation }: any) {
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [monthlyStats, setMonthlyStats] = useState({ present: 0, late: 0, halfDay: 0, wfh: 0, absent: 0, total: 0 });
 
-  // 🚀 Added Dynamic Attendance States
+  // 🚀 Dynamic Attendance Settings (backend-driven)
   const [attSettings, setAttSettings] = useState<any>(null);
   const [punchLoading, setPunchLoading] = useState(false);
+
+  // 🚀 geo-tagged selfie check-in/out states
+  const [showGeoCam, setShowGeoCam] = useState(false);
+  const [checkingLocation, setCheckingLocation] = useState(false);
+  const [pendingLocation, setPendingLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [pendingAddress, setPendingAddress] = useState('');
 
   useFocusEffect(
     React.useCallback(() => {
@@ -113,7 +122,7 @@ export default function UnifiedDashboard({ navigation }: any) {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const ts = Date.now();
 
-      // 🚀 FETCH ATTENDANCE SETTINGS
+      // 🚀 FETCH ATTENDANCE SETTINGS (source of truth for check-in eligibility + geofence)
       const attSetRes = await axios.get(`${API_BASE}/settings/attendance?_t=${ts}`, config).catch(() => null);
       if (attSetRes?.data?.data) {
           setAttSettings(attSetRes.data.data);
@@ -317,83 +326,155 @@ export default function UnifiedDashboard({ navigation }: any) {
     return R * c * 1000;
   };
 
-  // 🚀 PUNCH ATTENDANCE LOGIC
-  const handlePunch = async () => {
-    const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
-    const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
-    const myEmpId = await AsyncStorage.getItem('employeeId');
-
-    const executePunch = async (locationPayload: any = null) => {
-        try {
-            setPunchLoading(true);
-            const token = await AsyncStorage.getItem('userToken');
-            const payload: any = {
-                employeeId: myEmpId,
-                method: 'mobile'
-            };
-            if (locationPayload) payload.location = locationPayload;
-
-            await axios.post(`${API_BASE}${endpoint}`, payload, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
-            await fetchData(isPrivileged, true);
-        } catch (e: any) {
-            Alert.alert("Error", e.response?.data?.message || "Failed to mark attendance.");
-        } finally {
-            setPunchLoading(false);
-        }
-    };
-
-    if (attSettings?.locationEnabled) {
-        if (Platform.OS === 'android') {
-            try {
-                const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
-                if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-                    return Alert.alert("Permission Denied", "Location permission is required for attendance.");
-                }
-            } catch (err) {
-                console.warn(err);
-            }
-        }
-
-        Geolocation.getCurrentPosition(
-            (position: any) => {
-                const userLat = position.coords.latitude;
-                const userLng = position.coords.longitude;
-                const locations = attSettings.locations || [];
-
-                let isWithinRange = false;
-                if (locations.length > 0) {
-                    for (let loc of locations) {
-                        const dist = getDistanceFromLatLonInMeters(userLat, userLng, loc.latitude, loc.longitude);
-                        if (dist <= (loc.radiusMeters || 100)) {
-                            isWithinRange = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!isWithinRange && locations.length > 0) {
-                    Alert.alert("Out of Range", "You are away from the office location. Cannot mark attendance.");
-                    return;
-                } else if (!isWithinRange && locations.length === 0) {
-                    Alert.alert("Configuration Error", "Location restriction is enabled but no office locations are configured.");
-                    return;
-                }
-
-                executePunch({ latitude: userLat, longitude: userLng });
-            },
-            (error: any) => {
-                Alert.alert("Location Error", error.message || "Failed to fetch current location. Make sure GPS is enabled.");
-            },
-            { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
-        );
-    } else {
-        executePunch();
+  // 🚀 free reverse-geocoding via OpenStreetMap Nominatim (no API key).
+  const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        { headers: { 'User-Agent': 'DCS-HRMS-App/1.0 (support@dcstechnosis.com)' } }
+      );
+      const data = await res.json();
+      return data?.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    } catch (e) {
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`; // graceful fallback, flow still continues
     }
   };
+
+  const handlePunch = async () => {
+    // ✅ Backend-driven flag — single source of truth, matches the button's own render gate below.
+    if (!attSettings || attSettings.checkinEnabled === false) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self check-in/out is disabled by admin. Please contact HR/admin."
+      );
+    }
+
+    if (Platform.OS === 'android') {
+        try {
+            const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+                return Alert.alert("Permission Denied", "Location permission is required for attendance.");
+            }
+        } catch (err) {
+            console.warn(err);
+        }
+    }
+
+    setCheckingLocation(true);
+
+    Geolocation.getCurrentPosition(
+        async (position: any) => {
+            const userLat = position.coords.latitude;
+            const userLng = position.coords.longitude;
+            const locations = attSettings?.locations || [];
+
+            // ── Geo-fence gate: camera stays closed until inside range ──
+            if (attSettings?.locationEnabled) {
+                if (locations.length === 0) {
+                    setCheckingLocation(false);
+                    return Alert.alert("Configuration Error", "Location restriction is enabled but no office locations are configured.");
+                }
+
+                let nearest = locations[0];
+                let minDist = Infinity;
+                for (const loc of locations) {
+                    const dist = getDistanceFromLatLonInMeters(userLat, userLng, loc.latitude, loc.longitude);
+                    if (dist < minDist) { minDist = dist; nearest = loc; }
+                }
+
+                const withinRange = minDist <= (nearest.radiusMeters || 100);
+
+                if (!withinRange) {
+                    setCheckingLocation(false);
+                    return Alert.alert(
+                        "Out of Range",
+                        `You are ${Math.round(minDist)}m away from ${nearest.name || 'the office location'}. Move within ${nearest.radiusMeters || 100}m to mark attendance.`
+                    );
+                }
+            }
+
+            // ── In range (or no geo-fence) → fetch address, THEN open camera ──
+            const addr = await reverseGeocode(userLat, userLng);
+            setPendingLocation({ latitude: userLat, longitude: userLng });
+            setPendingAddress(addr);
+            setCheckingLocation(false);
+            setShowGeoCam(true);
+        },
+        (error: any) => {
+            setCheckingLocation(false);
+            Alert.alert("Location Error", error.message || "Failed to fetch current location. Make sure GPS is enabled.");
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+    );
+  };
+
+const handlePhotoCaptured = async (fileUri: string) => {
+  setShowGeoCam(false);
+  if (!pendingLocation) return; // safety guard
+
+  setPunchLoading(true);
+  try {
+      const token = await AsyncStorage.getItem('userToken');
+      const myEmpId = await AsyncStorage.getItem('employeeId');
+
+      // ── Upload photo ──
+      const form = new FormData();
+      form.append('file', {
+          uri: fileUri,
+          name: `attendance_${Date.now()}.jpg`,
+          type: 'image/jpeg',
+      } as any);
+
+      const uploadRes = await axios.post(`${API_BASE}/upload`, form, {
+          headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'multipart/form-data',
+          },
+      });
+
+      // ✅ FIXED: backend returns { success: true, fileUrl: "/uploads/..." }
+      // fileUrl is a relative path, so it needs the API origin prepended
+      // to be usable as an <Image source={{ uri }}> later.
+      const rawPath =
+          uploadRes.data?.fileUrl ||
+          uploadRes.data?.url ||
+          uploadRes.data?.data?.fileUrl ||
+          uploadRes.data?.data?.url;
+
+      if (!rawPath) throw new Error('Upload did not return a file URL.');
+
+      // If backend already returns an absolute URL (http/https), use it as-is.
+      // Otherwise, prefix with the API origin (strip a trailing /api if present).
+      const apiOrigin = API_BASE.replace(/\/api\/?$/, '');
+      const photoProof = /^https?:\/\//i.test(rawPath)
+          ? rawPath
+          : `${apiOrigin}${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
+
+      // ── Check-in / checkout ──
+      const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
+      const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
+
+      await axios.post(
+          `${API_BASE}${endpoint}`,
+          {
+              employeeId: myEmpId,
+              method: 'mobile',
+              location: pendingLocation,
+              photoProof,
+          },
+          { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
+      await fetchData(isPrivileged, true);
+  } catch (e: any) {
+      Alert.alert("Error", e.response?.data?.message || e.message || "Failed to mark attendance.");
+  } finally {
+      setPunchLoading(false);
+      setPendingLocation(null);
+      setPendingAddress('');
+  }
+};
 
   const hasPerm = (resourceKey: string) => {
       if (!resourceKey) return true;
@@ -429,13 +510,24 @@ export default function UnifiedDashboard({ navigation }: any) {
     { label: 'Analytics', icon: 'chart-line', color: '#22C55E', route: 'Analytics', perm: 'ANALYTICS', adminOnly: true }
   ];
 
+  // 🎨 Premium KPI card — colored left accent, tinted glow shadow, richer icon tile
   const StatCard = ({ title, val, icon, color, bg, subText, actionLabel, onAction }: any) => (
-    <View style={[styles.kpiCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
+    <View style={[
+        styles.kpiCard,
+        {
+            backgroundColor: colors.cardBg,
+            borderColor: colors.border,
+            borderLeftColor: color,
+            shadowColor: color,
+        }
+    ]}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start'}}>
-            <View style={[styles.kpiIcon, {backgroundColor: bg}]}><MaterialCommunityIcons name={icon} size={24} color={color} /></View>
+            <View style={[styles.kpiIcon, {backgroundColor: bg}]}>
+                <MaterialCommunityIcons name={icon} size={23} color={color} />
+            </View>
             {actionLabel && (
-                <TouchableOpacity style={{backgroundColor: color, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6}} onPress={onAction}>
-                    <Text style={{color: '#fff', fontSize: 9, fontWeight: 'bold'}}>{actionLabel}</Text>
+                <TouchableOpacity style={[styles.kpiActionBtn, {backgroundColor: color, shadowColor: color}]} onPress={onAction} activeOpacity={0.8}>
+                    <Text style={styles.kpiActionText}>{actionLabel}</Text>
                 </TouchableOpacity>
             )}
         </View>
@@ -446,11 +538,11 @@ export default function UnifiedDashboard({ navigation }: any) {
   );
 
   const LegendItem = ({color, label, count}: any) => (
-      <View style={{flexDirection: 'row', alignItems: 'center', width: '31%', marginBottom: 12}}>
-          <View style={{width: 12, height: 12, borderRadius: 3, backgroundColor: color, marginRight: 8}}/>
+      <View style={{flexDirection: 'row', alignItems: 'center', width: '31%', marginBottom: 14}}>
+          <View style={{width: 10, height: 10, borderRadius: 3, backgroundColor: color, marginRight: 8}}/>
           <View>
-             <Text style={{fontSize: 10, color: colors.textSub}}>{label}</Text>
-             <Text style={{fontSize: 15, fontWeight: '900', color: colors.textMain}}>{count}</Text>
+             <Text style={{fontSize: 10, color: colors.textSub, fontWeight: '600', letterSpacing: 0.2}}>{label}</Text>
+             <Text style={{fontSize: 16, fontWeight: '900', color: colors.textMain, marginTop: 1}}>{count}</Text>
           </View>
       </View>
   );
@@ -487,18 +579,33 @@ export default function UnifiedDashboard({ navigation }: any) {
 
       <ScrollView 
         contentContainerStyle={styles.scrollContent} 
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={syncBiometricAndRefresh} />}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={syncBiometricAndRefresh} tintColor="#3B82F6" />}
       >
         <View style={styles.headerRow}>
           <View><Text style={[styles.dashboardTitle, {color: colors.textMain}]}>Dashboard</Text><Text style={styles.navDate}>{currentDate}</Text></View>
-          <View style={[styles.liveClockBox, {backgroundColor: isLightMode ? '#3B82F615' : 'rgba(59, 130, 246, 0.2)'}]}><Text style={styles.liveTimeText}>{liveTime}</Text></View>
+          <View style={[styles.liveClockBox, {backgroundColor: isLightMode ? '#EFF6FF' : 'rgba(59, 130, 246, 0.16)', borderColor: isLightMode ? '#DBEAFE' : 'rgba(59,130,246,0.3)'}]}>
+            <View style={styles.liveDot} />
+            <Text style={styles.liveTimeText}>{liveTime}</Text>
+          </View>
         </View>
 
-        <View style={[styles.greetingBanner, { backgroundColor: isLightMode ? (isPrivileged ? '#EFF6FF' : '#E0F2F1') : 'rgba(30,58,138,0.2)' }]}>
-          <View style={styles.avatarLarge}><Text style={styles.avatarText}>{userName.charAt(0)}</Text></View>
-          <View style={{marginLeft: 15}}>
+        <View style={[styles.greetingBanner, { backgroundColor: isLightMode ? (isPrivileged ? '#EEF4FF' : '#ECFDF5') : 'rgba(30,58,138,0.22)', borderColor: isLightMode ? (isPrivileged ? '#DCE8FF' : '#D1FAE5') : 'rgba(59,130,246,0.25)' }]}>
+          {/* decorative accent circles for a richer, premium banner feel */}
+          <View pointerEvents="none" style={[styles.bannerBlobLarge, {backgroundColor: isPrivileged ? 'rgba(59,130,246,0.10)' : 'rgba(16,185,129,0.10)'}]} />
+          <View pointerEvents="none" style={[styles.bannerBlobSmall, {backgroundColor: isPrivileged ? 'rgba(139,92,246,0.10)' : 'rgba(245,158,11,0.10)'}]} />
+
+          <View style={[styles.avatarRing, {borderColor: isPrivileged ? 'rgba(59,130,246,0.35)' : 'rgba(16,185,129,0.35)'}]}>
+            <View style={[styles.avatarLarge, {backgroundColor: isPrivileged ? '#2563EB' : '#059669'}]}>
+              <Text style={styles.avatarText}>{userName.charAt(0)}</Text>
+            </View>
+          </View>
+          <View style={{marginLeft: 15, flex: 1}}>
               <Text style={[styles.helloText, {color: colors.textMain}]}>Good {getGreeting()}, {userName.split(' ')[0]} 👋</Text>
-              <Text style={styles.subText}>{isPrivileged ? `${userRoleDisplay} Portal` : 'Employee Portal'}</Text>
+              <View style={[styles.rolePill, {backgroundColor: isPrivileged ? 'rgba(59,130,246,0.14)' : 'rgba(16,185,129,0.14)'}]}>
+                <MaterialCommunityIcons name={isPrivileged ? 'shield-star' : 'account-check'} size={11} color={isPrivileged ? '#2563EB' : '#059669'} style={{marginRight: 4}} />
+                <Text style={[styles.subText, {color: isPrivileged ? '#2563EB' : '#059669'}]}>{isPrivileged ? `${userRoleDisplay} Portal` : 'Employee Portal'}</Text>
+              </View>
           </View>
         </View>
 
@@ -507,26 +614,31 @@ export default function UnifiedDashboard({ navigation }: any) {
             {isPrivileged ? (
                 <View>
                     <View style={styles.statGrid}>
-                        <StatCard title="Total Employees" val={adminStats.totalEmployees || 0} icon="account-group" color="#3B82F6" bg="rgba(59, 130, 246, 0.15)" />
-                        <StatCard title="Present Today" val={adminStats.presentToday || 0} icon="check-decagram" color="#10B981" bg="rgba(16, 185, 129, 0.15)" subText={`${Math.max(0, (adminStats.totalEmployees || 0) - (adminStats.presentToday || 0))} Absent`} />
-                        <StatCard title="Pending Leaves" val={adminStats.pendingLeaves || 0} icon="calendar-clock" color="#F59E0B" bg="rgba(245, 158, 11, 0.15)" actionLabel="VIEW ALL" onAction={() => navigation.navigate('Leaves')} />
-                        <StatCard title="HR Managers" val={adminStats.totalHR || 0} icon="shield-account" color="#8B5CF6" bg="rgba(139, 92, 246, 0.15)" />
+                        <StatCard title="Total Employees" val={adminStats.totalEmployees || 0} icon="account-group" color="#3B82F6" bg="rgba(59, 130, 246, 0.14)" />
+                        <StatCard title="Present Today" val={adminStats.presentToday || 0} icon="check-decagram" color="#10B981" bg="rgba(16, 185, 129, 0.14)" subText={`${Math.max(0, (adminStats.totalEmployees || 0) - (adminStats.presentToday || 0))} Absent`} />
+                        <StatCard title="Pending Leaves" val={adminStats.pendingLeaves || 0} icon="calendar-clock" color="#F59E0B" bg="rgba(245, 158, 11, 0.14)" actionLabel="VIEW ALL" onAction={() => navigation.navigate('Leaves')} />
+                        <StatCard title="HR Managers" val={adminStats.totalHR || 0} icon="shield-account" color="#8B5CF6" bg="rgba(139, 92, 246, 0.14)" />
                     </View>
 
                     <View style={[styles.whiteSection, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
-                        <View style={styles.sectionHeader}><Text style={[styles.sectionTitle, {color: colors.textMain, marginBottom: 0}]}>Pending Requests</Text></View>
+                        <View style={styles.sectionHeader}>
+                            <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                                <View style={[styles.sectionAccent, {backgroundColor: '#F59E0B'}]} />
+                                <Text style={[styles.sectionTitle, {color: colors.textMain, marginBottom: 0}]}>Pending Requests</Text>
+                            </View>
+                        </View>
                         {pendingLeavesList.length > 0 ? pendingLeavesList.map((leave, i) => (
-                            <View key={i} style={[styles.leaveActionCard, {borderColor: colors.border}]}>
+                            <View key={i} style={[styles.leaveActionCard, {borderColor: colors.border, backgroundColor: isLightMode ? '#FAFBFF' : 'transparent'}]}>
                                 <View style={{flex: 1}}>
-                                    <Text style={{fontWeight: 'bold', color: colors.textMain, fontSize: 14}}>{leave.employeeId?.userId?.firstName} {leave.employeeId?.userId?.lastName}</Text>
-                                    <Text style={{fontSize: 11, color: colors.textSub, marginTop: 2}}>{typeof leave.leaveType === 'object' ? leave.leaveType?.name : leave.leaveType} Leave • {leave.totalDays} Day(s)</Text>
-                                    <Text style={{fontSize: 10, color: colors.primary, marginTop: 4}}>{new Date(leave.startDate).toLocaleDateString()} to {new Date(leave.endDate).toLocaleDateString()}</Text>
+                                    <Text style={{fontWeight: '800', color: colors.textMain, fontSize: 14}}>{leave.employeeId?.userId?.firstName} {leave.employeeId?.userId?.lastName}</Text>
+                                    <Text style={{fontSize: 11, color: colors.textSub, marginTop: 3}}>{typeof leave.leaveType === 'object' ? leave.leaveType?.name : leave.leaveType} Leave • {leave.totalDays} Day(s)</Text>
+                                    <Text style={{fontSize: 10, color: colors.primary, marginTop: 5, fontWeight: '600'}}>{new Date(leave.startDate).toLocaleDateString()} to {new Date(leave.endDate).toLocaleDateString()}</Text>
                                 </View>
                                 <View style={{flexDirection: 'row'}}>
-                                    <TouchableOpacity style={[styles.actionBtn, {backgroundColor: 'rgba(16, 185, 129, 0.15)'}]} onPress={() => updateLeaveStatus(leave._id, 'approved')}>
+                                    <TouchableOpacity style={[styles.actionBtn, {backgroundColor: 'rgba(16, 185, 129, 0.14)'}]} onPress={() => updateLeaveStatus(leave._id, 'approved')} activeOpacity={0.7}>
                                         <MaterialCommunityIcons name="check" size={18} color="#10B981" />
                                     </TouchableOpacity>
-                                    <TouchableOpacity style={[styles.actionBtn, {backgroundColor: 'rgba(239, 68, 68, 0.15)', marginLeft: 8}]} onPress={() => updateLeaveStatus(leave._id, 'rejected')}>
+                                    <TouchableOpacity style={[styles.actionBtn, {backgroundColor: 'rgba(239, 68, 68, 0.14)', marginLeft: 8}]} onPress={() => updateLeaveStatus(leave._id, 'rejected')} activeOpacity={0.7}>
                                         <MaterialCommunityIcons name="close" size={18} color="#EF4444" />
                                     </TouchableOpacity>
                                 </View>
@@ -538,19 +650,25 @@ export default function UnifiedDashboard({ navigation }: any) {
 
                     {recentEmployees.length > 0 && (
                         <View style={[styles.whiteSection, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
-                            <View style={styles.sectionHeader}><Text style={[styles.sectionTitle, {color: colors.textMain, marginBottom: 0}]}>Recent Employees</Text><TouchableOpacity onPress={()=>navigation.navigate('Employees')}><Text style={{color: colors.primary, fontSize: 12, fontWeight: 'bold'}}>View All</Text></TouchableOpacity></View>
-                            <View style={{flexDirection: 'row', borderBottomWidth: 1, borderColor: colors.border, paddingBottom: 8, marginBottom: 8}}>
-                                <Text style={{flex: 2, fontSize: 10, color: colors.textSub, fontWeight: 'bold'}}>EMPLOYEE</Text>
-                                <Text style={{flex: 1.5, fontSize: 10, color: colors.textSub, fontWeight: 'bold'}}>DEPARTMENT</Text>
-                                <Text style={{flex: 1.5, fontSize: 10, color: colors.textSub, fontWeight: 'bold', textAlign: 'right'}}>DESIGNATION</Text>
+                            <View style={styles.sectionHeader}>
+                                <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                                    <View style={[styles.sectionAccent, {backgroundColor: '#3B82F6'}]} />
+                                    <Text style={[styles.sectionTitle, {color: colors.textMain, marginBottom: 0}]}>Recent Employees</Text>
+                                </View>
+                                <TouchableOpacity onPress={()=>navigation.navigate('Employees')}><Text style={{color: colors.primary, fontSize: 12, fontWeight: '800'}}>View All</Text></TouchableOpacity>
+                            </View>
+                            <View style={{flexDirection: 'row', borderBottomWidth: 1, borderColor: colors.border, paddingBottom: 9, marginBottom: 9}}>
+                                <Text style={{flex: 2, fontSize: 10, color: colors.textSub, fontWeight: '800', letterSpacing: 0.3}}>EMPLOYEE</Text>
+                                <Text style={{flex: 1.5, fontSize: 10, color: colors.textSub, fontWeight: '800', letterSpacing: 0.3}}>DEPARTMENT</Text>
+                                <Text style={{flex: 1.5, fontSize: 10, color: colors.textSub, fontWeight: '800', letterSpacing: 0.3, textAlign: 'right'}}>DESIGNATION</Text>
                             </View>
 
                             {recentEmployees.map((emp, i) => (
                                 <View key={i} style={[styles.empRow, {borderBottomColor: colors.border}, i === recentEmployees.length-1 && {borderBottomWidth: 0}]}>
                                     <View style={{flex: 3, flexDirection: 'row', alignItems: 'center'}}>
-                                        <View style={styles.smallAvatar}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 12}}>{emp.userId?.firstName?.charAt(0) || 'U'}</Text></View>
-                                        <View style={{marginLeft: 8, flex: 1}}>
-                                            <Text style={{fontWeight:'bold', color: colors.textMain, fontSize: 12}} numberOfLines={1}>{emp.userId?.firstName} {emp.userId?.lastName}</Text>
+                                        <View style={styles.smallAvatar}><Text style={{color:'#fff', fontWeight:'800', fontSize: 12}}>{emp.userId?.firstName?.charAt(0) || 'U'}</Text></View>
+                                        <View style={{marginLeft: 9, flex: 1}}>
+                                            <Text style={{fontWeight:'800', color: colors.textMain, fontSize: 12}} numberOfLines={1}>{emp.userId?.firstName} {emp.userId?.lastName}</Text>
                                             <Text style={{fontSize: 10, color: colors.textSub}}>{emp.employeeId || 'N/A'}</Text>
                                         </View>
                                     </View>
@@ -568,7 +686,10 @@ export default function UnifiedDashboard({ navigation }: any) {
             ) : (
                 <View>
                     <View style={[styles.attendanceCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
-                       <Text style={styles.cardHeader}>💎 TODAY'S ATTENDANCE</Text>
+                       <View style={styles.cardHeaderRow}>
+                           <MaterialCommunityIcons name="shield-check-outline" size={13} color="#94A3B8" style={{marginRight: 5}} />
+                           <Text style={styles.cardHeader}>TODAY'S ATTENDANCE</Text>
+                       </View>
                        <View style={[styles.statusBadge, {backgroundColor: isLightMode ? '#F8FAFC' : '#1E293B'}]}>
                           <View style={[styles.statusDot, {backgroundColor: todayRecord?.checkIn?.time ? (todayRecord.status === 'late' ? '#F59E0B' : '#10B981') : '#94A3B8'}]} />
                           <Text style={styles.statusLabel}>{todayRecord?.checkIn?.time ? (todayRecord.status || 'Present') : 'Not Checked In'}</Text>
@@ -578,20 +699,36 @@ export default function UnifiedDashboard({ navigation }: any) {
                           <View style={[styles.divider, {backgroundColor: colors.border}]} /><View style={styles.timeBox}><Text style={styles.timeLabel}>CHECK OUT</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{formatTime(todayRecord?.checkOut?.time)}</Text></View>
                           <View style={[styles.divider, {backgroundColor: colors.border}]} /><View style={styles.timeBox}><Text style={styles.timeLabel}>HOURS</Text><Text style={[styles.timeValue, {color: colors.textMain}]}>{todayRecord?.workingHours ? `${parseFloat(todayRecord.workingHours).toFixed(1)}h` : '—'}</Text></View>
                        </View>
+
+                       {(todayRecord?.checkIn?.photoProof || todayRecord?.checkOut?.photoProof) && (
+                           <TouchableOpacity
+                               style={styles.photoHintRow}
+                               onPress={() => navigation.navigate('Attendance')}
+                               activeOpacity={0.7}
+                           >
+                               <Image
+                                   source={{ uri: todayRecord.checkOut?.photoProof || todayRecord.checkIn?.photoProof }}
+                                   style={styles.photoHintThumb}
+                               />
+                               <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700', flex: 1 }}>Photo proof captured — view in Attendance</Text>
+                               <MaterialCommunityIcons name="chevron-right" size={18} color={colors.primary} />
+                           </TouchableOpacity>
+                       )}
                        
-                       {/* 🚀 FIXED: Dynamic Button based on Backend Check-in Flag */}
+                       {/* Dynamic Button based on Backend checkinEnabled Flag */}
                        {attSettings && attSettings.checkinEnabled === false ? (
-                           <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.1)', padding: 12, borderRadius: 12, alignItems: 'center' }}>
+                           <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.12)', padding: 14, borderRadius: 14, alignItems: 'center' }}>
                                <MaterialCommunityIcons name="information" size={20} color="#6366F1" style={{marginRight: 10}} />
-                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '500'}}>Self check-in/out is disabled by admin. Contact HR/admin to mark attendance.</Text>
+                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600'}}>Self check-in/out is disabled by admin. Contact HR/admin to mark attendance.</Text>
                            </View>
                        ) : (
                            <TouchableOpacity 
-                               style={[styles.punchBtn, todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? {backgroundColor: '#EF4444'} : {}]} 
+                               style={[styles.punchBtn, todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? styles.punchBtnOut : styles.punchBtnIn]} 
                                onPress={handlePunch}
-                               disabled={punchLoading}
+                               disabled={punchLoading || checkingLocation}
+                               activeOpacity={0.85}
                            >
-                               {punchLoading ? <ActivityIndicator color="#fff" /> : (
+                               {(punchLoading || checkingLocation) ? <ActivityIndicator color="#fff" /> : (
                                    <>
                                       <MaterialCommunityIcons name={todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "logout" : "login"} size={22} color="#fff" />
                                       <Text style={styles.punchBtnText}>{todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "Check Out" : "Check In"}</Text>
@@ -599,11 +736,18 @@ export default function UnifiedDashboard({ navigation }: any) {
                                )}
                            </TouchableOpacity>
                        )}
+                       {checkingLocation && (
+                           <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10}}>
+                               <MaterialCommunityIcons name="crosshairs-gps" size={13} color={colors.textSub} style={{marginRight: 5}} />
+                               <Text style={{ color: colors.textSub, fontSize: 11, fontWeight: '600' }}>Checking your location...</Text>
+                           </View>
+                       )}
                     </View>
                 </View>
             )}
 
-            {permissions.some(p => p.includes('ATTENDANCE:SELF')) && (
+            {/* 🔒 Employees only — admins/HR manage attendance org-wide, not a personal monthly view */}
+            {!isPrivileged && permissions.some(p => p.includes('ATTENDANCE:SELF')) && (
                 <View style={{marginBottom: 25}}>
                     <Text style={[styles.sectionTitle, {color: colors.textMain}]}>📊 My Monthly Attendance</Text>
                     <View style={[styles.whiteSection, {backgroundColor: colors.cardBg, borderColor: colors.border, padding: 20}]}>
@@ -630,8 +774,8 @@ export default function UnifiedDashboard({ navigation }: any) {
             <Text style={[styles.sectionTitle, {color: colors.textMain}]}>⚡ Quick Links</Text>
             <View style={styles.linkGrid}>
                 {QUICK_LINKS.filter(l => hasPerm(l.perm)).map((link, i) => (
-                    <TouchableOpacity key={i} style={[styles.compactLinkItem, {backgroundColor: colors.cardBg, borderColor: colors.border}]} onPress={() => navigation.navigate(link.route)}>
-                        <View style={[styles.linkIconBox, {backgroundColor: link.color + '15'}]}><MaterialCommunityIcons name={link.icon} size={22} color={link.color} /></View>
+                    <TouchableOpacity key={i} style={[styles.compactLinkItem, {backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: link.color}]} onPress={() => navigation.navigate(link.route)} activeOpacity={0.75}>
+                        <View style={[styles.linkIconBox, {backgroundColor: link.color + '18'}]}><MaterialCommunityIcons name={link.icon} size={23} color={link.color} /></View>
                         <Text style={[styles.linkLabel, {color: colors.textMain}]} numberOfLines={1}>{link.label}</Text>
                     </TouchableOpacity>
                 ))}
@@ -691,6 +835,18 @@ export default function UnifiedDashboard({ navigation }: any) {
               </View>
           </TouchableOpacity>
       )}
+
+      {/* geo-tagged selfie camera — opens only after permission + geo-fence checks pass */}
+      {pendingLocation && (
+          <GeoTagAttendanceCamera
+              visible={showGeoCam}
+              onClose={() => { setShowGeoCam(false); setPendingLocation(null); }}
+              onCapture={handlePhotoCaptured}
+              latitude={pendingLocation.latitude}
+              longitude={pendingLocation.longitude}
+              address={pendingAddress}
+          />
+      )}
     </SafeAreaView>
   );
 }
@@ -698,62 +854,78 @@ export default function UnifiedDashboard({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 100 }, 
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  dashboardTitle: { fontSize: 24, fontWeight: '900' },
-  navDate: { fontSize: 12, color: '#64748B', marginLeft: 2, marginTop: 2 },
-  liveClockBox: { padding: 8, borderRadius: 12 },
-  liveTimeText: { fontSize: 13, fontWeight: 'bold', color: '#3B82F6' },
-  greetingBanner: { flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 18, marginBottom: 25 },
-  avatarLarge: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#fff', fontWeight: 'bold', fontSize: 18 },
-  helloText: { fontSize: 16, fontWeight: '800' },
-  subText: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  dashboardTitle: { fontSize: 25, fontWeight: '900', letterSpacing: -0.5 },
+  navDate: { fontSize: 12, color: '#64748B', marginLeft: 2, marginTop: 3, fontWeight: '500' },
+  liveClockBox: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 9, borderRadius: 14, borderWidth: 1 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#3B82F6', marginRight: 6 },
+  liveTimeText: { fontSize: 13, fontWeight: '800', color: '#3B82F6', letterSpacing: 0.3 },
+
+  greetingBanner: { flexDirection: 'row', alignItems: 'center', padding: 18, borderRadius: 24, marginBottom: 25, borderWidth: 1, overflow: 'hidden', position: 'relative' },
+  bannerBlobLarge: { position: 'absolute', width: 140, height: 140, borderRadius: 70, top: -60, right: -40 },
+  bannerBlobSmall: { position: 'absolute', width: 80, height: 80, borderRadius: 40, bottom: -30, right: 60 },
+  avatarRing: { width: 62, height: 62, borderRadius: 31, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
+  avatarLarge: { width: 54, height: 54, borderRadius: 27, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.25, shadowRadius: 6 },
+  avatarText: { color: '#fff', fontWeight: '900', fontSize: 20 },
+  helloText: { fontSize: 16, fontWeight: '800', marginBottom: 7 },
+  rolePill: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 9 },
+  subText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
 
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  kpiCard: { width: '48%', borderWidth: 1, padding: 15, borderRadius: 18, marginBottom: 15, elevation: 2 },
-  kpiIcon: { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
-  kpiVal: { fontSize: 22, fontWeight: '900' },
-  kpiSubText: { fontSize: 10, color: '#EF4444', fontWeight: 'bold', marginBottom: 2 },
-  kpiLabel: { fontSize: 11, color: '#64748B', fontWeight: 'bold' },
+  kpiCard: { width: '48%', borderWidth: 1, borderLeftWidth: 4, padding: 16, borderRadius: 20, marginBottom: 14, elevation: 3, shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.14, shadowRadius: 10 },
+  kpiIcon: { width: 44, height: 44, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  kpiActionBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, elevation: 2, shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.3, shadowRadius: 4 },
+  kpiActionText: { color: '#fff', fontSize: 9, fontWeight: '900', letterSpacing: 0.3 },
+  kpiVal: { fontSize: 25, fontWeight: '900', letterSpacing: -0.5, marginTop: 2 },
+  kpiSubText: { fontSize: 10, color: '#EF4444', fontWeight: '800', marginTop: 2, marginBottom: 2 },
+  kpiLabel: { fontSize: 11, color: '#64748B', fontWeight: '700', marginTop: 4 },
   
-  attendanceCard: { padding: 20, borderRadius: 22, elevation: 2, marginBottom: 25 },
-  cardHeader: { fontSize: 10, fontWeight: 'bold', textAlign: 'center', color: '#94A3B8', marginBottom: 12 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, marginBottom: 20 },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  statusLabel: { fontSize: 11, fontWeight: '700', color: '#64748B', textTransform: 'capitalize' },
-  timeRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 20 },
+  attendanceCard: { padding: 22, borderRadius: 26, elevation: 3, shadowColor: '#000', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.06, shadowRadius: 10, marginBottom: 25, borderWidth: 1 },
+  cardHeaderRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  cardHeader: { fontSize: 10, fontWeight: '800', color: '#94A3B8', letterSpacing: 1 },
+  statusBadge: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, marginBottom: 22 },
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 7 },
+  statusLabel: { fontSize: 11, fontWeight: '800', color: '#64748B', textTransform: 'capitalize', letterSpacing: 0.2 },
+  timeRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 22 },
   timeBox: { alignItems: 'center' },
-  timeLabel: { fontSize: 9, color: '#94A3B8', fontWeight: 'bold' },
-  timeValue: { fontSize: 16, fontWeight: 'bold', marginTop: 4 },
-  divider: { width: 1, height: 30 },
-  punchBtn: { backgroundColor: '#3B82F6', padding: 15, borderRadius: 15, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  punchBtnText: { color: '#fff', fontWeight: 'bold', marginLeft: 10, fontSize: 16 },
-  
-  whiteSection: { padding: 20, borderRadius: 18, marginBottom: 25, borderWidth: 1, elevation: 1 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  sectionTitle: { fontSize: 16, fontWeight: '900', marginBottom: 15 },
-  
-  leaveActionCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderWidth: 1, borderRadius: 12, marginBottom: 10 },
-  actionBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
+  timeLabel: { fontSize: 9, color: '#94A3B8', fontWeight: '800', letterSpacing: 0.5 },
+  timeValue: { fontSize: 17, fontWeight: '900', marginTop: 5 },
+  divider: { width: 1, height: 32 },
 
-  empRow: { flexDirection: 'row', paddingVertical: 11, borderBottomWidth: 1 },
-  smallAvatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
+  photoHintRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 18, backgroundColor: 'rgba(59,130,246,0.06)', padding: 10, borderRadius: 12 },
+  photoHintThumb: { width: 36, height: 36, borderRadius: 10, marginRight: 10 },
+
+  punchBtn: { padding: 17, borderRadius: 18, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', elevation: 4 },
+  punchBtnIn: { backgroundColor: '#3B82F6', shadowColor: '#3B82F6', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 8 },
+  punchBtnOut: { backgroundColor: '#EF4444', shadowColor: '#EF4444', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 8 },
+  punchBtnText: { color: '#fff', fontWeight: '800', marginLeft: 10, fontSize: 16, letterSpacing: 0.2 },
+  
+  whiteSection: { padding: 20, borderRadius: 24, marginBottom: 25, borderWidth: 1, elevation: 2, shadowColor: '#000', shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.06, shadowRadius: 8 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  sectionTitle: { fontSize: 16, fontWeight: '900', marginBottom: 15, letterSpacing: -0.2 },
+  sectionAccent: { width: 4, height: 16, borderRadius: 2, marginRight: 8 },
+  
+  leaveActionCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 13, borderWidth: 1, borderRadius: 15, marginBottom: 10 },
+  actionBtn: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+
+  empRow: { flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1 },
+  smallAvatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
   
   linkGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 25 },
-  compactLinkItem: { width: '22.5%', alignItems: 'center', marginBottom: 5 },
-  linkIconBox: { width: 48, height: 48, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
-  linkLabel: { fontSize: 10, fontWeight: 'bold', textAlign: 'center' },
+  compactLinkItem: { width: '22.5%', alignItems: 'center', marginBottom: 5, padding: 9, borderRadius: 18, borderWidth: 1, elevation: 2, shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.12, shadowRadius: 6 },
+  linkIconBox: { width: 52, height: 52, borderRadius: 17, justifyContent: 'center', alignItems: 'center', marginBottom: 7 },
+  linkLabel: { fontSize: 10, fontWeight: '700', textAlign: 'center' },
   
-  annCard: { padding: 15, borderRadius: 13, borderLeftWidth: 5, borderWidth: 1, marginBottom: 12, elevation: 1 },
-  annTitle: { fontWeight: 'bold', fontSize: 15, marginBottom: 4 },
+  annCard: { padding: 16, borderRadius: 16, borderLeftWidth: 5, borderWidth: 1, marginBottom: 12, elevation: 1, shadowColor: '#000', shadowOffset: {width: 0, height: 1}, shadowOpacity: 0.04, shadowRadius: 4 },
+  annTitle: { fontWeight: '800', fontSize: 15, marginBottom: 5 },
   annDesc: { fontSize: 13, lineHeight: 20 },
 
-  timelineContainer: { padding: 20, borderRadius: 18, borderWidth: 1, elevation: 1 },
+  timelineContainer: { padding: 20, borderRadius: 24, borderWidth: 1, elevation: 2, shadowColor: '#000', shadowOffset: {width: 0, height: 3}, shadowOpacity: 0.06, shadowRadius: 8 },
   timelineItem: { flexDirection: 'row', marginBottom: 15, position: 'relative' },
   timelineLine: { position: 'absolute', left: 11, top: 25, bottom: -20, width: 2 },
   timelineDot: { width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center', zIndex: 2 },
   timelineContent: { flex: 1, marginLeft: 15, justifyContent: 'center' },
-  timelineTitle: { fontSize: 13, fontWeight: 'bold' },
+  timelineTitle: { fontSize: 13, fontWeight: '800' },
   timelineDesc: { fontSize: 11, marginTop: 2 },
 
   fabMain: { position: 'absolute', bottom: 30, right: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, zIndex: 11 },
@@ -762,5 +934,5 @@ const styles = StyleSheet.create({
   fabMenuText: { color: '#fff', fontSize: 14, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, marginRight: 10, overflow: 'hidden' },
   fabMenuIcon: { width: 44, height: 43, borderRadius: 22, justifyContent: 'center', alignItems: 'center', elevation: 3 },
 
-  graphCountText: { color: '#fff', fontSize: 11, fontWeight: 'bold' }
+  graphCountText: { color: '#fff', fontSize: 11, fontWeight: '800' }
 });

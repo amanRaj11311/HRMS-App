@@ -30,15 +30,13 @@ axios.interceptors.response.use(
     const status = error.response?.status;
     const requestUrl = error.config?.url || "";
 
-    // 🚀 FIXED: Bypass these specific APIs from triggering global logout
     const isLoginApi = requestUrl.includes("/auth/login");
     const isDeviceSyncApi = requestUrl.includes("/device/attendance");
 
     if (status === 401 && status=== 403 && !isSessionExpiredAlertVisible && !isLoginApi && !isDeviceSyncApi) {
       isSessionExpiredAlertVisible = true;
 
-      // Sirf session/token details remove hongi.
-      // Saved email/password remove nahi honge.
+    
       await AsyncStorage.multiRemove(SESSION_KEYS);
 
       Alert.alert(
