@@ -11,8 +11,6 @@ import Geolocation from 'react-native-geolocation-service';
 import { useTheme } from '../constants/theme'; 
 import GlobalAppBar from '../components/GlobalAppBar';
 import { API_BASE } from '../api/api';
-
-// 🚀 geo-tagged selfie camera (photo proof viewer now lives in Attendance module)
 import GeoTagAttendanceCamera from '../screens/GeoAttendanceCamera'; // adjust path to wherever you place it
 
 const { width } = Dimensions.get("window");
@@ -42,17 +40,16 @@ export default function UnifiedDashboard({ navigation }: any) {
   // 🚀 Dynamic Attendance Settings (backend-driven)
   const [attSettings, setAttSettings] = useState<any>(null);
   const [punchLoading, setPunchLoading] = useState(false);
-
-  // 🚀 Individual (per-employee) self check-in/out permission — comes from login payload
-  // (user.selfCheckinAllowed), stored in AsyncStorage at login time as 'selfCheckinAllowed'.
-  // Final eligibility = admin's global attSettings.checkinEnabled AND this individual flag — both must be true.
-  const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(true);
-
+const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(false);
   // 🚀 geo-tagged selfie check-in/out states
   const [showGeoCam, setShowGeoCam] = useState(false);
   const [checkingLocation, setCheckingLocation] = useState(false);
   const [pendingLocation, setPendingLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [pendingAddress, setPendingAddress] = useState('');
+  // 🚀 extra geo context for the camera screen's "DCS Geo Location" panel (Step 3 of workflow)
+  const [pendingAccuracy, setPendingAccuracy] = useState<number | null>(null);
+  const [pendingDistance, setPendingDistance] = useState<number | null>(null);
+  const [pendingLocationName, setPendingLocationName] = useState<string | null>(null);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -114,7 +111,7 @@ export default function UnifiedDashboard({ navigation }: any) {
 
       // 🚀 Individual self check-in/out permission (default true unless explicitly stored as 'false')
       const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
-      setSelfCheckinAllowed(selfCheckinStr !== 'false');
+setSelfCheckinAllowed(selfCheckinStr === 'true');
       
       await fetchData(hasAdminRights);
   };
@@ -349,8 +346,27 @@ export default function UnifiedDashboard({ navigation }: any) {
     }
   };
 
+  // 🚀 Step 1 (permission gate) — does this employee have Self Check-In/Check-Out
+  // permission at all? Computed from RBAC permissions, independent of the admin's
+  // global toggle (attSettings.checkinEnabled) and the individual flag (selfCheckinAllowed),
+  // both of which are checked further down in handlePunch / at render time.
+  const hasSelfCheckinPermission = permissions.some(p => p.includes('ATTENDANCE:SELF'));
+const canSelfCheckin =
+  hasSelfCheckinPermission &&
+  selfCheckinAllowed === true &&
+  attSettings?.checkinEnabled === true;
   const handlePunch = async () => {
-    // ✅ Two independent gates — BOTH must be true, matches the button's own render gate below.
+    // ── Step 1: Permission check — must happen before anything else, including
+    // starting the location workflow. If the employee has no Self Check-In/Check-Out
+    // permission at all, stop here. (The button itself is also hidden for this case —
+    // see the render logic below — this is a defensive second check.)
+    if (!hasSelfCheckinPermission) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self Check-In / Check-Out permission is not available. Please contact HR/Admin for permission."
+      );
+    }
+
     // 1) Global backend-driven flag (admin toggles this org-wide)
     if (!attSettings || attSettings.checkinEnabled === false) {
       return Alert.alert(
@@ -380,14 +396,17 @@ export default function UnifiedDashboard({ navigation }: any) {
     }
 
     setCheckingLocation(true);
-
     Geolocation.getCurrentPosition(
         async (position: any) => {
             const userLat = position.coords.latitude;
             const userLng = position.coords.longitude;
+            const accuracy = position.coords.accuracy ?? null;
             const locations = attSettings?.locations || [];
 
-            // ── Geo-fence gate: camera stays closed until inside range ──
+            let distanceFromAllowed: number | null = null;
+            let nearestLocationName: string | null = null;
+
+            // ── Case B: Geo-fence gate — camera stays closed until inside range ──
             if (attSettings?.locationEnabled) {
                 if (locations.length === 0) {
                     setCheckingLocation(false);
@@ -402,20 +421,23 @@ export default function UnifiedDashboard({ navigation }: any) {
                 }
 
                 const withinRange = minDist <= (nearest.radiusMeters || 100);
+                distanceFromAllowed = minDist;
+                nearestLocationName = nearest.name || 'the office location';
 
                 if (!withinRange) {
                     setCheckingLocation(false);
                     return Alert.alert(
                         "Out of Range",
-                        `You are ${Math.round(minDist)}m away from ${nearest.name || 'the office location'}. Move within ${nearest.radiusMeters || 100}m to mark attendance.`
+                        `You are outside the allowed location. You're ${Math.round(minDist)}m away from ${nearestLocationName}. Please move within ${nearest.radiusMeters || 100}m to check in/out.`
                     );
                 }
             }
-
-            // ── In range (or no geo-fence) → fetch address, THEN open camera ──
             const addr = await reverseGeocode(userLat, userLng);
             setPendingLocation({ latitude: userLat, longitude: userLng });
             setPendingAddress(addr);
+            setPendingAccuracy(accuracy);
+            setPendingDistance(distanceFromAllowed);
+            setPendingLocationName(nearestLocationName);
             setCheckingLocation(false);
             setShowGeoCam(true);
         },
@@ -451,9 +473,6 @@ const handlePhotoCaptured = async (fileUri: string) => {
           },
       });
 
-      // ✅ FIXED: backend returns { success: true, fileUrl: "/uploads/..." }
-      // fileUrl is a relative path, so it needs the API origin prepended
-      // to be usable as an <Image source={{ uri }}> later.
       const rawPath =
           uploadRes.data?.fileUrl ||
           uploadRes.data?.url ||
@@ -462,8 +481,6 @@ const handlePhotoCaptured = async (fileUri: string) => {
 
       if (!rawPath) throw new Error('Upload did not return a file URL.');
 
-      // If backend already returns an absolute URL (http/https), use it as-is.
-      // Otherwise, prefix with the API origin (strip a trailing /api if present).
       const apiOrigin = API_BASE.replace(/\/api\/?$/, '');
       const photoProof = /^https?:\/\//i.test(rawPath)
           ? rawPath
@@ -492,6 +509,9 @@ const handlePhotoCaptured = async (fileUri: string) => {
       setPunchLoading(false);
       setPendingLocation(null);
       setPendingAddress('');
+      setPendingAccuracy(null);
+      setPendingDistance(null);
+      setPendingLocationName(null);
   }
 };
 
@@ -704,6 +724,20 @@ const handlePhotoCaptured = async (fileUri: string) => {
                 </View>
             ) : (
                 <View>
+                    {!hasSelfCheckinPermission ? (
+                        <View style={[styles.attendanceCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
+                           <View style={styles.cardHeaderRow}>
+                               <MaterialCommunityIcons name="shield-check-outline" size={13} color="#94A3B8" style={{marginRight: 5}} />
+                               <Text style={styles.cardHeader}>TODAY'S ATTENDANCE</Text>
+                           </View>
+                           <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.12)', padding: 14, borderRadius: 14, alignItems: 'center' }}>
+                               <MaterialCommunityIcons name="lock-outline" size={20} color="#6366F1" style={{ marginRight: 10 }} />
+                               <Text style={{ color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600' }}>
+                                   Self Check-In / Check-Out permission is not available. Please contact HR/Admin for permission.
+                               </Text>
+                           </View>
+                        </View>
+                    ) : (
                     <View style={[styles.attendanceCard, {backgroundColor: colors.cardBg, borderColor: colors.border}]}>
                        <View style={styles.cardHeaderRow}>
                            <MaterialCommunityIcons name="shield-check-outline" size={13} color="#94A3B8" style={{marginRight: 5}} />
@@ -733,32 +767,70 @@ const handlePhotoCaptured = async (fileUri: string) => {
                                <MaterialCommunityIcons name="chevron-right" size={18} color={colors.primary} />
                            </TouchableOpacity>
                        )}
-                       
-                       {/* Dynamic Button — needs BOTH the global (admin) flag AND the individual (per-employee) flag to be true */}
-                       {(attSettings && attSettings.checkinEnabled === false) || selfCheckinAllowed === false ? (
-                           <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.12)', padding: 14, borderRadius: 14, alignItems: 'center' }}>
-                               <MaterialCommunityIcons name="information" size={20} color="#6366F1" style={{marginRight: 10}} />
-                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600'}}>
-                                   {selfCheckinAllowed === false
-                                       ? "Self check-in/out is not enabled for your account. Contact HR/admin to mark attendance."
-                                       : "Self check-in/out is disabled by admin. Contact HR/admin to mark attendance."}
-                               </Text>
-                           </View>
-                       ) : (
-                           <TouchableOpacity 
-                               style={[styles.punchBtn, todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? styles.punchBtnOut : styles.punchBtnIn]} 
-                               onPress={handlePunch}
-                               disabled={punchLoading || checkingLocation}
-                               activeOpacity={0.85}
-                           >
-                               {(punchLoading || checkingLocation) ? <ActivityIndicator color="#fff" /> : (
-                                   <>
-                                      <MaterialCommunityIcons name={todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "logout" : "login"} size={22} color="#fff" />
-                                      <Text style={styles.punchBtnText}>{todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time ? "Check Out" : "Check In"}</Text>
-                                   </>
-                               )}
-                           </TouchableOpacity>
-                       )}
+{canSelfCheckin ? (
+  <TouchableOpacity 
+    style={[
+      styles.punchBtn,
+      todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+        ? styles.punchBtnOut
+        : styles.punchBtnIn
+    ]} 
+    onPress={handlePunch}
+    disabled={punchLoading || checkingLocation}
+    activeOpacity={0.85}
+  >
+    {(punchLoading || checkingLocation) ? (
+      <ActivityIndicator color="#fff" />
+    ) : (
+      <>
+        <MaterialCommunityIcons
+          name={
+            todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+              ? "logout"
+              : "login"
+          }
+          size={22}
+          color="#fff"
+        />
+        <Text style={styles.punchBtnText}>
+          {todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+            ? "Check Out"
+            : "Check In"}
+        </Text>
+      </>
+    )}
+  </TouchableOpacity>
+) : (
+  <View
+    style={{
+      flexDirection: 'row',
+      backgroundColor: isLightMode
+        ? '#EEF2FF'
+        : 'rgba(99, 102, 241, 0.12)',
+      padding: 14,
+      borderRadius: 14,
+      alignItems: 'center',
+    }}
+  >
+    <MaterialCommunityIcons
+      name="information"
+      size={20}
+      color="#6366F1"
+      style={{ marginRight: 10 }}
+    />
+
+    <Text
+      style={{
+        color: '#6366F1',
+        fontSize: 13,
+        flex: 1,
+        fontWeight: '600',
+      }}
+    >
+      Self check-in/out is not enabled. Please contact HR/Admin.
+    </Text>
+  </View>
+)}
                        {checkingLocation && (
                            <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10}}>
                                <MaterialCommunityIcons name="crosshairs-gps" size={13} color={colors.textSub} style={{marginRight: 5}} />
@@ -766,6 +838,7 @@ const handlePhotoCaptured = async (fileUri: string) => {
                            </View>
                        )}
                     </View>
+                    )}
                 </View>
             )}
 
@@ -859,7 +932,6 @@ const handlePhotoCaptured = async (fileUri: string) => {
           </TouchableOpacity>
       )}
 
-      {/* geo-tagged selfie camera — opens only after permission + geo-fence checks pass */}
       {pendingLocation && (
           <GeoTagAttendanceCamera
               visible={showGeoCam}
@@ -868,6 +940,10 @@ const handlePhotoCaptured = async (fileUri: string) => {
               latitude={pendingLocation.latitude}
               longitude={pendingLocation.longitude}
               address={pendingAddress}
+              accuracy={pendingAccuracy}
+              distanceFromAllowed={pendingDistance}
+              allowedLocationName={pendingLocationName}
+              locationBased={!!attSettings?.locationEnabled}
           />
       )}
     </SafeAreaView>

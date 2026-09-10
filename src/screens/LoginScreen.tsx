@@ -210,6 +210,11 @@ export default function LoginScreen({ navigation }: any) {
           "userPermissions",
           JSON.stringify(user.permissions || [])
         );
+        // Save self check-in/out permission from login response
+await AsyncStorage.setItem(
+  "selfCheckinAllowed",
+  String(user.selfCheckinAllowed === true)
+);
 
         // This is only for token/session preference
         await AsyncStorage.setItem("keepLoggedIn", remember ? "true" : "false");

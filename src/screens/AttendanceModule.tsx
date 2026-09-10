@@ -88,13 +88,19 @@ export default function AttendanceModule({ navigation }: any) {
   // 🚀 Self check-in/out — same flow as Dashboard, available here too (top attendance card)
   const [attSettings, setAttSettings] = useState<any>(null);
   // Individual (per-employee) self check-in/out permission — from login payload (user.selfCheckinAllowed),
-  // stored in AsyncStorage as 'selfCheckinAllowed'. Final eligibility needs BOTH this AND attSettings.checkinEnabled true.
+  // stored in AsyncStorage as 'selfCheckinAllowed'. Final eligibility needs the RBAC permission
+  // (ATTENDANCE:SELF, see hasSelfCheckinPermission) AND attSettings.checkinEnabled AND this flag,
+  // ALL true.
   const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(true);
   const [punchLoading, setPunchLoading] = useState(false);
   const [checkingLocation, setCheckingLocation] = useState(false);
   const [showGeoCam, setShowGeoCam] = useState(false);
   const [pendingLocation, setPendingLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [pendingAddress, setPendingAddress] = useState('');
+  // 🚀 extra geo context for the camera screen's "DCS Geo Location" panel (Step 3 of workflow)
+  const [pendingAccuracy, setPendingAccuracy] = useState<number | null>(null);
+  const [pendingDistance, setPendingDistance] = useState<number | null>(null);
+  const [pendingLocationName, setPendingLocationName] = useState<string | null>(null);
 
   // 🚀 FIX: dedicated "today's attendance" record — fetched independently of the
   // list/month filters above, so the check-in/out card & FAB never go stale just
@@ -197,9 +203,6 @@ export default function AttendanceModule({ navigation }: any) {
     const permsStr = await AsyncStorage.getItem('userPermissions');
     const userNameStr = await AsyncStorage.getItem('userName'); 
 
-    // 🚀 FIX: uppercase permissions exactly like Dashboard does. Previously this
-    // stayed in whatever case the backend returned it, which silently broke every
-    // canDo(...) check and the 'ATTENDANCE:SELF' lookup used for the self-punch card.
     const pArray = permsStr ? JSON.parse(permsStr).map((p: string) => p.toUpperCase()) : [];
     
     setPermissions(pArray);
@@ -213,9 +216,6 @@ export default function AttendanceModule({ navigation }: any) {
         fetchEmployees();
     }
 
-    // 🚀 FIX: fetch today's record independently of the filtered list/month,
-    // so the check-in/out card & FAB status stays correct no matter what
-    // date/month filter the user has selected below.
     if (pArray.some((p: string) => p.includes('ATTENDANCE:SELF'))) {
         fetchTodayRecord();
     }
@@ -230,9 +230,6 @@ export default function AttendanceModule({ navigation }: any) {
       setAllEmployees((res.data?.data?.data || res.data?.data || []).filter((e:any) => !e.isDeleted));
     } catch (e) {}
   };
-
-  // 🚀 NEW: dedicated fetch for "today's" attendance record, used purely to drive
-  // the check-in/out card + FAB. Does not depend on filterDate/isDateFiltered.
   const fetchTodayRecord = async () => {
       try {
           const token = await AsyncStorage.getItem('userToken');
@@ -659,10 +656,17 @@ export default function AttendanceModule({ navigation }: any) {
     }
   };
 
+  const hasSelfCheckinPermission = permissions.some(p => p.includes('ATTENDANCE:SELF'));
+
   // 🚀 Self check-in/out — card/button handler. Location/geofence logic is unchanged from Dashboard.
   const handlePunch = async () => {
-    // Two independent gates — BOTH must be true, matches the card's own render gate below.
-    // 1) Global backend-driven flag (admin toggles this org-wide)
+    if (!hasSelfCheckinPermission) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self Check-In / Check-Out permission is not available. Please contact HR/Admin for permission."
+      );
+    }
+
     if (!attSettings || attSettings.checkinEnabled === false) {
       return Alert.alert(
         "Not Allowed",
@@ -695,7 +699,11 @@ export default function AttendanceModule({ navigation }: any) {
         async (position: any) => {
             const userLat = position.coords.latitude;
             const userLng = position.coords.longitude;
+            const accuracy = position.coords.accuracy ?? null;
             const locations = attSettings?.locations || [];
+
+            let distanceFromAllowed: number | null = null;
+            let nearestLocationName: string | null = null;
 
             if (attSettings?.locationEnabled) {
                 if (locations.length === 0) {
@@ -711,19 +719,25 @@ export default function AttendanceModule({ navigation }: any) {
                 }
 
                 const withinRange = minDist <= (nearest.radiusMeters || 100);
+                distanceFromAllowed = minDist;
+                nearestLocationName = nearest.name || 'the office location';
 
                 if (!withinRange) {
                     setCheckingLocation(false);
                     return Alert.alert(
                         "Out of Range",
-                        `You are ${Math.round(minDist)}m away from ${nearest.name || 'the office location'}. Move within ${nearest.radiusMeters || 100}m to mark attendance.`
+                        `You are outside the allowed location. You're ${Math.round(minDist)}m away from ${nearestLocationName}. Please move within ${nearest.radiusMeters || 100}m to check in/out.`
                     );
                 }
             }
+            // Case A: locationEnabled is false — no validation, fall straight through to camera.
 
             const addr = await reverseGeocode(userLat, userLng);
             setPendingLocation({ latitude: userLat, longitude: userLng });
             setPendingAddress(addr);
+            setPendingAccuracy(accuracy);
+            setPendingDistance(distanceFromAllowed);
+            setPendingLocationName(nearestLocationName);
             setCheckingLocation(false);
             setShowGeoCam(true);
         },
@@ -797,6 +811,9 @@ export default function AttendanceModule({ navigation }: any) {
         setPunchLoading(false);
         setPendingLocation(null);
         setPendingAddress('');
+        setPendingAccuracy(null);
+        setPendingDistance(null);
+        setPendingLocationName(null);
     }
   };
 
@@ -882,11 +899,10 @@ export default function AttendanceModule({ navigation }: any) {
       return matchesSearch && matchesStatus && matchesEmp;
   });
 
-  // 🚀 Self punch card/FAB — only for employees marking their own attendance (not the VIEW/admin screen)
-  const showSelfPunchFab = !canDo('VIEW') && permissions.some(p => p.includes('ATTENDANCE:SELF'));
-  // 🚀 FIX: driven by the dedicated todayRecord (filter-independent) instead of records.find(...)
+  const showSelfPunchFab = !canDo('VIEW') && hasSelfCheckinPermission;
+  
+  const showNoSelfCheckinPermissionMsg = !canDo('VIEW') && !hasSelfCheckinPermission;
   const isCheckingOutForFab = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
-  // Needs BOTH the global (admin) flag AND the individual (per-employee) flag to be true
   const checkinDisabledForFab = (attSettings && attSettings.checkinEnabled === false) || selfCheckinAllowed === false;
 
   return (
@@ -914,6 +930,17 @@ export default function AttendanceModule({ navigation }: any) {
                 )}
             </View>
         </View>
+
+        {showNoSelfCheckinPermissionMsg && (
+            <View style={[styles.attCard, { backgroundColor: colors.cardBg, borderColor: colors.border, borderLeftColor: '#6366F1', marginBottom: 16 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <MaterialCommunityIcons name="lock-outline" size={20} color="#6366F1" style={{ marginRight: 10 }} />
+                    <Text style={{ color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600' }}>
+                        Self Check-In / Check-Out permission is not available. Please contact HR/Admin for permission.
+                    </Text>
+                </View>
+            </View>
+        )}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 20}}>
             <KpiCard label="Total Present" val={totalPresentCount} color="#10B981" bg="rgba(16,185,129,0.12)" icon="account-check" />
@@ -1128,7 +1155,8 @@ export default function AttendanceModule({ navigation }: any) {
       )}
 
       {/* 🚀 Self check-in/out — floating button. Tap opens the "Today's Attendance"
-          card centered on screen; the card itself carries out the actual punch. */}
+          card centered on screen; the card itself carries out the actual punch.
+          Only rendered when the RBAC permission gate (Step 1) passes. */}
       {showSelfPunchFab && (
           <TouchableOpacity
               style={[
@@ -1385,6 +1413,10 @@ export default function AttendanceModule({ navigation }: any) {
               latitude={pendingLocation.latitude}
               longitude={pendingLocation.longitude}
               address={pendingAddress}
+              accuracy={pendingAccuracy}
+              distanceFromAllowed={pendingDistance}
+              allowedLocationName={pendingLocationName}
+              locationBased={!!attSettings?.locationEnabled}
           />
       )}
       
