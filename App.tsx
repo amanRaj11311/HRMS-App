@@ -1,4 +1,4 @@
-import 'react-native-gesture-handler'; // 1. First line always
+import 'react-native-gesture-handler'; 
 import React, { useEffect, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
@@ -8,16 +8,15 @@ import {
   initializeNotifications,
   requestNotificationPermission,
 } from './src/services/notificationService';
+import NewNotificationPopup from './src/components/NewNotificationPopup';
 
-// 🚀 FIXED: Global navigation ref import kiya
-import { navigationRef } from './src/api/NavigationService'; // Apne folder path ke hisaab se theek kar lena
+import { navigationRef } from './src/api/NavigationService'; 
 
-// Custom Theme Provider
 import { ThemeProvider } from "./src/constants/theme";
 
 export default function App() {
   const [isReady, setIsReady] = useState(false);
-  const [initialRoute, setInitialRoute] = useState("LoginScreen"); // Default to Login
+  const [initialRoute, setInitialRoute] = useState("LoginScreen"); 
 
   useEffect(() => {
     initializeNotifications();
@@ -30,21 +29,17 @@ export default function App() {
 
         if (token) {
           if (keepLoggedIn === 'false') {
-            // User did NOT check "Keep me logged in", so clear session on fresh start
             await AsyncStorage.removeItem('userToken');
-            setInitialRoute("Login"); // Go to Login
+            setInitialRoute("Login"); 
           } else {
-            // User checked it, and token exists, so bypass login
-            setInitialRoute("DrawerRoot"); // Go to Dashboard
+            setInitialRoute("DrawerRoot"); 
           }
         } else {
-          // No token found, go to Login
           setInitialRoute("Login");
         }
       } catch (error) {
         console.error("Auth check error:", error);
       } finally {
-        // Stop the loading spinner once checking is done
         setIsReady(true);
       }
     };
@@ -52,7 +47,6 @@ export default function App() {
     checkAuthStatus();
   }, []);
 
-  // Show a loading spinner while checking AsyncStorage
   if (!isReady) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
@@ -63,9 +57,11 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      {/* 🚀 FIXED: navigationRef ko yahan attach kar diya */}
       <NavigationContainer ref={navigationRef}>
         <AppNavigator initialRoute={initialRoute} />
+        {/* Mounted once at root so it works no matter which screen the user is on.
+            Polls for new notifications only while the app is open in foreground. */}
+        <NewNotificationPopup />
       </NavigationContainer>
     </ThemeProvider>
   );
