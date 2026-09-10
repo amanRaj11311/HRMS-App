@@ -43,6 +43,11 @@ export default function UnifiedDashboard({ navigation }: any) {
   const [attSettings, setAttSettings] = useState<any>(null);
   const [punchLoading, setPunchLoading] = useState(false);
 
+  // 🚀 Individual (per-employee) self check-in/out permission — comes from login payload
+  // (user.selfCheckinAllowed), stored in AsyncStorage at login time as 'selfCheckinAllowed'.
+  // Final eligibility = admin's global attSettings.checkinEnabled AND this individual flag — both must be true.
+  const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(true);
+
   // 🚀 geo-tagged selfie check-in/out states
   const [showGeoCam, setShowGeoCam] = useState(false);
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -106,6 +111,10 @@ export default function UnifiedDashboard({ navigation }: any) {
       
       if (name) setUserName(name);
       setPermissions(parsedPerms);
+
+      // 🚀 Individual self check-in/out permission (default true unless explicitly stored as 'false')
+      const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
+      setSelfCheckinAllowed(selfCheckinStr !== 'false');
       
       await fetchData(hasAdminRights);
   };
@@ -341,11 +350,21 @@ export default function UnifiedDashboard({ navigation }: any) {
   };
 
   const handlePunch = async () => {
-    // ✅ Backend-driven flag — single source of truth, matches the button's own render gate below.
+    // ✅ Two independent gates — BOTH must be true, matches the button's own render gate below.
+    // 1) Global backend-driven flag (admin toggles this org-wide)
     if (!attSettings || attSettings.checkinEnabled === false) {
       return Alert.alert(
         "Not Allowed",
         "Self check-in/out is disabled by admin. Please contact HR/admin."
+      );
+    }
+
+    // 2) Individual (per-employee) flag — even if org-wide is enabled, this specific employee
+    //    may be excluded from self check-in/out.
+    if (selfCheckinAllowed === false) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self check-in/out is not enabled for your account. Please contact HR/admin."
       );
     }
 
@@ -715,11 +734,15 @@ const handlePhotoCaptured = async (fileUri: string) => {
                            </TouchableOpacity>
                        )}
                        
-                       {/* Dynamic Button based on Backend checkinEnabled Flag */}
-                       {attSettings && attSettings.checkinEnabled === false ? (
+                       {/* Dynamic Button — needs BOTH the global (admin) flag AND the individual (per-employee) flag to be true */}
+                       {(attSettings && attSettings.checkinEnabled === false) || selfCheckinAllowed === false ? (
                            <View style={{ flexDirection: 'row', backgroundColor: isLightMode ? '#EEF2FF' : 'rgba(99, 102, 241, 0.12)', padding: 14, borderRadius: 14, alignItems: 'center' }}>
                                <MaterialCommunityIcons name="information" size={20} color="#6366F1" style={{marginRight: 10}} />
-                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600'}}>Self check-in/out is disabled by admin. Contact HR/admin to mark attendance.</Text>
+                               <Text style={{color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600'}}>
+                                   {selfCheckinAllowed === false
+                                       ? "Self check-in/out is not enabled for your account. Contact HR/admin to mark attendance."
+                                       : "Self check-in/out is disabled by admin. Contact HR/admin to mark attendance."}
+                               </Text>
                            </View>
                        ) : (
                            <TouchableOpacity 

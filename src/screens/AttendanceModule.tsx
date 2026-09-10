@@ -9,6 +9,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import Feather from 'react-native-vector-icons/Feather';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import Geolocation from 'react-native-geolocation-service';
 import DateTimePicker from '@react-native-community/datetimepicker'; 
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../constants/theme';
@@ -16,6 +17,8 @@ import GlobalAppBar from '../components/GlobalAppBar';
 
 // 🚀 photo proof viewer now lives here (moved from Dashboard)
 import PhotoProofModal from '../screens/photofrommodal';
+// 🚀 geo-tagged selfie camera — same self check-in/out flow as Dashboard, now available here too
+import GeoTagAttendanceCamera from '../screens/GeoAttendanceCamera';
 
 import { API_BASE } from '../api/api';
 
@@ -78,9 +81,28 @@ export default function AttendanceModule({ navigation }: any) {
   const [showDlEmpModal, setShowDlEmpModal] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
-  // 🚀 NEW: photo proof modal state (moved here from Dashboard)
+  // 🚀 photo proof modal state (moved here from Dashboard)
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [selectedPhotoRecord, setSelectedPhotoRecord] = useState<any>(null);
+
+  // 🚀 Self check-in/out — same flow as Dashboard, available here too (top attendance card)
+  const [attSettings, setAttSettings] = useState<any>(null);
+  // Individual (per-employee) self check-in/out permission — from login payload (user.selfCheckinAllowed),
+  // stored in AsyncStorage as 'selfCheckinAllowed'. Final eligibility needs BOTH this AND attSettings.checkinEnabled true.
+  const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(true);
+  const [punchLoading, setPunchLoading] = useState(false);
+  const [checkingLocation, setCheckingLocation] = useState(false);
+  const [showGeoCam, setShowGeoCam] = useState(false);
+  const [pendingLocation, setPendingLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [pendingAddress, setPendingAddress] = useState('');
+
+  // 🚀 FIX: dedicated "today's attendance" record — fetched independently of the
+  // list/month filters above, so the check-in/out card & FAB never go stale just
+  // because the user changed the filter date/month while browsing records.
+  const [todayRecord, setTodayRecord] = useState<any>(null);
+
+  // 🚀 NEW: floating button opens the "Today's Attendance" card as a centered modal
+  const [showAttendanceCardModal, setShowAttendanceCardModal] = useState(false);
 
   const getInitialTime = (hours: number, minutes = 0) => {
     const d = new Date();
@@ -174,13 +196,28 @@ export default function AttendanceModule({ navigation }: any) {
     setLoading(true);
     const permsStr = await AsyncStorage.getItem('userPermissions');
     const userNameStr = await AsyncStorage.getItem('userName'); 
-    const pArray = permsStr ? JSON.parse(permsStr) : [];
+
+    // 🚀 FIX: uppercase permissions exactly like Dashboard does. Previously this
+    // stayed in whatever case the backend returned it, which silently broke every
+    // canDo(...) check and the 'ATTENDANCE:SELF' lookup used for the self-punch card.
+    const pArray = permsStr ? JSON.parse(permsStr).map((p: string) => p.toUpperCase()) : [];
     
     setPermissions(pArray);
     if (userNameStr) setMyName(userNameStr);
+
+    // 🚀 Individual self check-in/out permission (default true unless explicitly stored as 'false')
+    const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
+    setSelfCheckinAllowed(selfCheckinStr !== 'false');
     
     if (pArray.includes('ATTENDANCE:VIEW')) {
         fetchEmployees();
+    }
+
+    // 🚀 FIX: fetch today's record independently of the filtered list/month,
+    // so the check-in/out card & FAB status stays correct no matter what
+    // date/month filter the user has selected below.
+    if (pArray.some((p: string) => p.includes('ATTENDANCE:SELF'))) {
+        fetchTodayRecord();
     }
     
     await fetchData(false, pArray);
@@ -192,6 +229,23 @@ export default function AttendanceModule({ navigation }: any) {
       const res = await axios.get(`${API_BASE}/employees?limit=500`, { headers: { Authorization: `Bearer ${token}` } });
       setAllEmployees((res.data?.data?.data || res.data?.data || []).filter((e:any) => !e.isDeleted));
     } catch (e) {}
+  };
+
+  // 🚀 NEW: dedicated fetch for "today's" attendance record, used purely to drive
+  // the check-in/out card + FAB. Does not depend on filterDate/isDateFiltered.
+  const fetchTodayRecord = async () => {
+      try {
+          const token = await AsyncStorage.getItem('userToken');
+          const res = await axios.get(`${API_BASE}/attendance/self?limit=500&_t=${Date.now()}`, {
+              headers: { Authorization: `Bearer ${token}` }
+          });
+          const data = res?.data?.data || [];
+          const todayStr = new Date().toDateString();
+          const rec = data.find((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
+          setTodayRecord(rec || null);
+      } catch (e) {
+          setTodayRecord(null);
+      }
   };
 
   const fetchData = async (isSilent = false, pArray?: string[]) => {
@@ -220,10 +274,15 @@ export default function AttendanceModule({ navigation }: any) {
       url += `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
       reqUrl += `${reqUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
 
-      const [res, reqRes] = await Promise.all([
+      const [res, reqRes, attSetRes] = await Promise.all([
          axios.get(url, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
-         axios.get(reqUrl, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null)
+         axios.get(reqUrl, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+         axios.get(`${API_BASE}/settings/attendance?_t=${Date.now()}`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null)
       ]);
+
+      if (attSetRes?.data?.data) {
+          setAttSettings(attSetRes.data.data);
+      }
 
       const data = res?.data?.data || [];
       const requestsData = reqRes?.data?.data || [];
@@ -326,6 +385,7 @@ export default function AttendanceModule({ navigation }: any) {
         return new Promise((resolve) => {
             setTimeout(async () => {
                await fetchData(true);
+               await fetchTodayRecord();
                if (!silent) {
                    Alert.alert("Success", "Attendance synchronized successfully!");
                    setIsSyncing(false);
@@ -519,6 +579,7 @@ export default function AttendanceModule({ navigation }: any) {
       
       setIsAddModalVisible(false);
       fetchData(true);
+      fetchTodayRecord();
       Alert.alert("Success", "Attendance saved successfully.");
     } catch (err: any) { 
         Alert.alert("Failed", err.response?.data?.message || "Server Error. Please check your data."); 
@@ -571,6 +632,174 @@ export default function AttendanceModule({ navigation }: any) {
     }
   };
 
+  // 🚀 MATH FUNCTION: Haversine distance calculator for Geo-fence (same as Dashboard)
+  const getDistanceFromLatLonInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c * 1000;
+  };
+
+  // 🚀 free reverse-geocoding via OpenStreetMap Nominatim (no API key) — same as Dashboard
+  const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        { headers: { 'User-Agent': 'DCS-HRMS-App/1.0 (support@dcstechnosis.com)' } }
+      );
+      const data = await res.json();
+      return data?.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    } catch (e) {
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+  };
+
+  // 🚀 Self check-in/out — card/button handler. Location/geofence logic is unchanged from Dashboard.
+  const handlePunch = async () => {
+    // Two independent gates — BOTH must be true, matches the card's own render gate below.
+    // 1) Global backend-driven flag (admin toggles this org-wide)
+    if (!attSettings || attSettings.checkinEnabled === false) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self check-in/out is disabled by admin. Please contact HR/admin."
+      );
+    }
+
+    // 2) Individual (per-employee) flag
+    if (selfCheckinAllowed === false) {
+      return Alert.alert(
+        "Not Allowed",
+        "Self check-in/out is not enabled for your account. Please contact HR/admin."
+      );
+    }
+
+    if (Platform.OS === 'android') {
+        try {
+            const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+                return Alert.alert("Permission Denied", "Location permission is required for attendance.");
+            }
+        } catch (err) {
+            console.warn(err);
+        }
+    }
+
+    setCheckingLocation(true);
+
+    Geolocation.getCurrentPosition(
+        async (position: any) => {
+            const userLat = position.coords.latitude;
+            const userLng = position.coords.longitude;
+            const locations = attSettings?.locations || [];
+
+            if (attSettings?.locationEnabled) {
+                if (locations.length === 0) {
+                    setCheckingLocation(false);
+                    return Alert.alert("Configuration Error", "Location restriction is enabled but no office locations are configured.");
+                }
+
+                let nearest = locations[0];
+                let minDist = Infinity;
+                for (const loc of locations) {
+                    const dist = getDistanceFromLatLonInMeters(userLat, userLng, loc.latitude, loc.longitude);
+                    if (dist < minDist) { minDist = dist; nearest = loc; }
+                }
+
+                const withinRange = minDist <= (nearest.radiusMeters || 100);
+
+                if (!withinRange) {
+                    setCheckingLocation(false);
+                    return Alert.alert(
+                        "Out of Range",
+                        `You are ${Math.round(minDist)}m away from ${nearest.name || 'the office location'}. Move within ${nearest.radiusMeters || 100}m to mark attendance.`
+                    );
+                }
+            }
+
+            const addr = await reverseGeocode(userLat, userLng);
+            setPendingLocation({ latitude: userLat, longitude: userLng });
+            setPendingAddress(addr);
+            setCheckingLocation(false);
+            setShowGeoCam(true);
+        },
+        (error: any) => {
+            setCheckingLocation(false);
+            Alert.alert("Location Error", error.message || "Failed to fetch current location. Make sure GPS is enabled.");
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+    );
+  };
+
+  const handlePhotoCaptured = async (fileUri: string) => {
+    setShowGeoCam(false);
+    if (!pendingLocation) return;
+
+    setPunchLoading(true);
+    try {
+        const token = await AsyncStorage.getItem('userToken');
+        const myEmpId = await AsyncStorage.getItem('employeeId');
+
+        const form = new FormData();
+        form.append('file', {
+            uri: fileUri,
+            name: `attendance_${Date.now()}.jpg`,
+            type: 'image/jpeg',
+        } as any);
+
+        const uploadRes = await axios.post(`${API_BASE}/upload`, form, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'multipart/form-data',
+            },
+        });
+
+        const rawPath =
+            uploadRes.data?.fileUrl ||
+            uploadRes.data?.url ||
+            uploadRes.data?.data?.fileUrl ||
+            uploadRes.data?.data?.url;
+
+        if (!rawPath) throw new Error('Upload did not return a file URL.');
+
+        const apiOrigin = API_BASE.replace(/\/api\/?$/, '');
+        const photoProof = /^https?:\/\//i.test(rawPath)
+            ? rawPath
+            : `${apiOrigin}${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
+
+        // 🚀 FIX: use the dedicated, filter-independent todayRecord instead of
+        // searching the (possibly stale/filtered) `records` array.
+        const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
+        const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
+
+        await axios.post(
+            `${API_BASE}${endpoint}`,
+            {
+                employeeId: myEmpId,
+                method: 'mobile',
+                location: pendingLocation,
+                photoProof,
+            },
+            { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
+        setShowAttendanceCardModal(false);
+        await fetchData(true);
+        await fetchTodayRecord();
+    } catch (e: any) {
+        Alert.alert("Error", e.response?.data?.message || e.message || "Failed to mark attendance.");
+    } finally {
+        setPunchLoading(false);
+        setPendingLocation(null);
+        setPendingAddress('');
+    }
+  };
+
   const deleteRecord = (id: string) => {
     Alert.alert("Delete", "Are you sure?", [
         { text: "Cancel" },
@@ -579,6 +808,7 @@ export default function AttendanceModule({ navigation }: any) {
                 const token = await AsyncStorage.getItem('userToken');
                 await axios.delete(`${API_BASE}/attendance/${id}`, { headers: { Authorization: `Bearer ${token}` } });
                 fetchData(true);
+                fetchTodayRecord();
             } catch (e) {}
         }}
     ]);
@@ -651,6 +881,13 @@ export default function AttendanceModule({ navigation }: any) {
       const matchesEmp = filterEmpId === 'All' || (rec.employeeId?._id || rec.employeeId) === filterEmpId;
       return matchesSearch && matchesStatus && matchesEmp;
   });
+
+  // 🚀 Self punch card/FAB — only for employees marking their own attendance (not the VIEW/admin screen)
+  const showSelfPunchFab = !canDo('VIEW') && permissions.some(p => p.includes('ATTENDANCE:SELF'));
+  // 🚀 FIX: driven by the dedicated todayRecord (filter-independent) instead of records.find(...)
+  const isCheckingOutForFab = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
+  // Needs BOTH the global (admin) flag AND the individual (per-employee) flag to be true
+  const checkinDisabledForFab = (attSettings && attSettings.checkinEnabled === false) || selfCheckinAllowed === false;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -756,7 +993,7 @@ export default function AttendanceModule({ navigation }: any) {
                             <Text style={[styles.statusTagText, {color: statusStyle.text}]}>{statusText}</Text>
                         </View>
 
-                        {/* 🚀 NEW: photo proof quick-view button */}
+                        {/* photo proof quick-view button */}
                         {hasPhotoProof && (
                             <TouchableOpacity
                                 style={[styles.editBtn, {backgroundColor: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.25)'}]}
@@ -890,6 +1127,131 @@ export default function AttendanceModule({ navigation }: any) {
           </TouchableOpacity>
       )}
 
+      {/* 🚀 Self check-in/out — floating button. Tap opens the "Today's Attendance"
+          card centered on screen; the card itself carries out the actual punch. */}
+      {showSelfPunchFab && (
+          <TouchableOpacity
+              style={[
+                  styles.punchFab,
+                  { backgroundColor: checkinDisabledForFab ? '#94A3B8' : (isCheckingOutForFab ? '#EF4444' : '#3B82F6') }
+              ]}
+              onPress={() => setShowAttendanceCardModal(true)}
+              activeOpacity={0.85}
+          >
+              <MaterialCommunityIcons
+                  name={checkinDisabledForFab ? "fingerprint" : (isCheckingOutForFab ? "logout" : "login")}
+                  size={24}
+                  color="#fff"
+              />
+              {!checkinDisabledForFab && !todayRecord?.checkIn?.time && (
+                  <View style={styles.punchFabPulseDot} />
+              )}
+          </TouchableOpacity>
+      )}
+
+      {/* 🚀 NEW: premium "Today's Attendance" card, opened from the floating button above */}
+      <Modal visible={showAttendanceCardModal} transparent animationType="fade">
+        <View style={styles.attModalOverlay}>
+          <View style={[styles.attModalCard, { backgroundColor: colors.cardBg }]}>
+            {/* decorative accent blobs for a richer, premium feel */}
+            <View pointerEvents="none" style={[styles.attCardBlobLarge, { backgroundColor: isCheckingOutForFab ? 'rgba(239,68,68,0.08)' : 'rgba(59,130,246,0.08)' }]} />
+            <View pointerEvents="none" style={[styles.attCardBlobSmall, { backgroundColor: 'rgba(139,92,246,0.08)' }]} />
+
+            <TouchableOpacity style={styles.attModalCloseBtn} onPress={() => setShowAttendanceCardModal(false)} activeOpacity={0.7}>
+              <Feather name="x" size={18} color={colors.textSub} />
+            </TouchableOpacity>
+
+            <View style={styles.attModalHeaderRow}>
+              <View style={[styles.attModalIconWrap, { backgroundColor: isCheckingOutForFab ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)' }]}>
+                <MaterialCommunityIcons name="fingerprint" size={22} color={isCheckingOutForFab ? '#EF4444' : '#3B82F6'} />
+              </View>
+              <View>
+                <Text style={[styles.attModalTitle, { color: colors.textMain }]}>Today's Attendance</Text>
+                <Text style={styles.attModalSubtitle}>
+                  {new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short' })}
+                </Text>
+              </View>
+            </View>
+
+            {(() => {
+              const st = todayRecord?.checkIn?.time ? getStatusStyle(todayRecord.status) : { bg: '#F1F5F9', text: '#64748B', dot: '#94A3B8' };
+              return (
+                <View style={[styles.attStatusPill, { backgroundColor: st.bg }]}>
+                  <View style={[styles.attStatusDot, { backgroundColor: st.dot }]} />
+                  <Text style={[styles.attStatusText, { color: st.text }]}>
+                    {todayRecord?.checkIn?.time ? (todayRecord.status || 'Present') : 'Not Checked In'}
+                  </Text>
+                </View>
+              );
+            })()}
+
+            <View style={styles.attTimeGrid}>
+              <View style={styles.attTimeCol}>
+                <View style={[styles.attTimeIconTile, { backgroundColor: 'rgba(59,130,246,0.12)' }]}>
+                  <MaterialCommunityIcons name="login" size={15} color="#3B82F6" />
+                </View>
+                <Text style={styles.attTimeLabel}>CHECK IN</Text>
+                <Text style={[styles.attTimeValue, { color: '#3B82F6' }]}>{formatTimeUI(todayRecord?.checkIn)}</Text>
+              </View>
+
+              <View style={styles.attTimeDividerLine} />
+
+              <View style={styles.attTimeCol}>
+                <View style={[styles.attTimeIconTile, { backgroundColor: 'rgba(100,116,139,0.10)' }]}>
+                  <MaterialCommunityIcons name="logout" size={15} color="#64748B" />
+                </View>
+                <Text style={styles.attTimeLabel}>CHECK OUT</Text>
+                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{formatTimeUI(todayRecord?.checkOut)}</Text>
+              </View>
+
+              <View style={styles.attTimeDividerLine} />
+
+              <View style={styles.attTimeCol}>
+                <View style={[styles.attTimeIconTile, { backgroundColor: 'rgba(139,92,246,0.12)' }]}>
+                  <MaterialCommunityIcons name="clock-outline" size={15} color="#8B5CF6" />
+                </View>
+                <Text style={styles.attTimeLabel}>HOURS</Text>
+                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{formatWorkingHours(todayRecord?.workingHours)}</Text>
+              </View>
+            </View>
+
+            {checkinDisabledForFab ? (
+              <View style={styles.attDisabledBox}>
+                <MaterialCommunityIcons name="information" size={20} color="#6366F1" style={{ marginRight: 10 }} />
+                <Text style={styles.attDisabledText}>
+                  {selfCheckinAllowed === false
+                    ? "Self check-in/out is not enabled for your account. Contact HR/admin."
+                    : "Self check-in/out is disabled by admin. Contact HR/admin."}
+                </Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.attPunchBtn, isCheckingOutForFab ? styles.attPunchBtnOut : styles.attPunchBtnIn]}
+                onPress={handlePunch}
+                disabled={punchLoading || checkingLocation}
+                activeOpacity={0.85}
+              >
+                {(punchLoading || checkingLocation) ? <ActivityIndicator color="#fff" /> : (
+                  <>
+                    <View style={styles.attPunchIconWrap}>
+                      <MaterialCommunityIcons name={isCheckingOutForFab ? "logout" : "login"} size={18} color="#fff" />
+                    </View>
+                    <Text style={styles.attPunchBtnText}>{isCheckingOutForFab ? "Check Out" : "Check In"}</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {checkingLocation && (
+              <View style={styles.attLocationRow}>
+                <MaterialCommunityIcons name="crosshairs-gps" size={13} color={colors.textSub} style={{ marginRight: 5 }} />
+                <Text style={styles.attLocationText}>Checking your location...</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={isDownloadModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
             <View style={[styles.modalContentCentered, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: 24, borderRadius: 26 }]}>
@@ -1005,7 +1367,7 @@ export default function AttendanceModule({ navigation }: any) {
         onClose={()=>setShowFormEmp(false)} colors={colors} 
       />
 
-      {/* 🚀 NEW: photo proof viewer — moved here from Dashboard, opens per attendance record */}
+      {/* photo proof viewer — opens per attendance record */}
       <PhotoProofModal
           visible={showPhotoModal}
           onClose={() => setShowPhotoModal(false)}
@@ -1013,6 +1375,18 @@ export default function AttendanceModule({ navigation }: any) {
           checkOutPhoto={selectedPhotoRecord?.checkOut?.photoProof}
           employeeName={`${selectedPhotoRecord?.employeeId?.userId?.firstName || ''} ${selectedPhotoRecord?.employeeId?.userId?.lastName || ''}`.trim() || myName}
       />
+
+      {/* geo-tagged selfie camera for the self punch card — opens only after permission + geo-fence checks pass */}
+      {pendingLocation && (
+          <GeoTagAttendanceCamera
+              visible={showGeoCam}
+              onClose={() => { setShowGeoCam(false); setPendingLocation(null); }}
+              onCapture={handlePhotoCaptured}
+              latitude={pendingLocation.latitude}
+              longitude={pendingLocation.longitude}
+              address={pendingAddress}
+          />
+      )}
       
       {showFilterDatePicker && <DateTimePicker value={filterDate} mode="date" onChange={(e, d) => { 
           setShowFilterDatePicker(false); 
@@ -1071,6 +1445,40 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '900', letterSpacing: -0.4 },
   addBtn: { backgroundColor: '#3B82F6', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, flexDirection: 'row', alignItems: 'center', elevation: 4, shadowColor: '#3B82F6', shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.35, shadowRadius: 7 },
   addBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12, marginLeft: 5 },
+
+  // 🚀 Floating self check-in/out button
+  punchFab: { position: 'absolute', bottom: 30, right: 20, width: 58, height: 58, borderRadius: 29, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6 },
+  punchFabPulseDot: { position: 'absolute', top: 6, right: 6, width: 10, height: 10, borderRadius: 5, backgroundColor: '#FBBF24', borderWidth: 2, borderColor: '#fff' },
+
+  // 🚀 Premium "Today's Attendance" modal card (opened via the floating button)
+  attModalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  attModalCard: { width: '100%', maxWidth: 380, borderRadius: 30, padding: 26, overflow: 'hidden', elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20 },
+  attCardBlobLarge: { position: 'absolute', width: 160, height: 160, borderRadius: 80, top: -70, right: -50 },
+  attCardBlobSmall: { position: 'absolute', width: 90, height: 90, borderRadius: 45, bottom: -35, left: -25 },
+  attModalCloseBtn: { position: 'absolute', top: 16, right: 16, width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(148,163,184,0.14)', justifyContent: 'center', alignItems: 'center', zIndex: 5 },
+  attModalHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 22 },
+  attModalIconWrap: { width: 46, height: 46, borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  attModalTitle: { fontSize: 17, fontWeight: '900', letterSpacing: -0.2 },
+  attModalSubtitle: { fontSize: 11, color: '#94A3B8', fontWeight: '600', marginTop: 2 },
+  attStatusPill: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, marginBottom: 24 },
+  attStatusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
+  attStatusText: { fontSize: 13, fontWeight: '800', textTransform: 'capitalize', letterSpacing: 0.2 },
+  attTimeGrid: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 26, paddingHorizontal: 4 },
+  attTimeCol: { flex: 1, alignItems: 'center' },
+  attTimeIconTile: { width: 32, height: 32, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  attTimeLabel: { fontSize: 9, color: '#94A3B8', fontWeight: '800', letterSpacing: 0.5, marginBottom: 5 },
+  attTimeValue: { fontSize: 15, fontWeight: '900' },
+  attTimeDividerLine: { width: 1, height: 44, backgroundColor: 'rgba(148,163,184,0.25)' },
+  attDisabledBox: { flexDirection: 'row', backgroundColor: '#EEF2FF', padding: 15, borderRadius: 16, alignItems: 'center' },
+  attDisabledText: { color: '#6366F1', fontSize: 13, flex: 1, fontWeight: '600', lineHeight: 18 },
+  attPunchBtn: { padding: 17, borderRadius: 18, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', elevation: 5, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10 },
+  attPunchBtnIn: { backgroundColor: '#3B82F6', shadowColor: '#3B82F6' },
+  attPunchBtnOut: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },
+  attPunchIconWrap: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  attPunchBtnText: { color: '#fff', fontWeight: '800', fontSize: 16, letterSpacing: 0.2 },
+  attLocationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  attLocationText: { fontSize: 11, fontWeight: '600', color: '#94A3B8' },
+
   kpiCard: { backgroundColor: '#FFF', width: 132, padding: 16, borderRadius: 18, marginRight: 12, borderLeftWidth: 4, elevation: 3, shadowOffset: {width: 0, height: 4}, shadowOpacity: 0.14, shadowRadius: 9 },
   kpiIconTile: { width: 34, height: 34, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
   kpiVal: { fontSize: 22, fontWeight: '900', marginTop: 2, letterSpacing: -0.3 },
@@ -1121,5 +1529,5 @@ const styles = StyleSheet.create({
   modalLabel: { fontWeight: '700', fontSize: 13, color: '#64748B', marginBottom: 6 },
   disabledInput: { borderWidth: 1, height: 48, borderRadius: 14, paddingHorizontal: 14, justifyContent: 'space-between', alignItems: 'center', flexDirection: 'row' },
   modalTextArea: { borderWidth: 1, borderRadius: 16, padding: 14, fontSize: 14, height: 90, textAlignVertical: 'top', marginTop: 4 },
-  submitRequestBtn: { height: 50, borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginTop: 20, elevation: 3, shadowColor: '#000', shadowOffset: {width:0, height:3}, shadowOpacity: 0.15, shadowRadius: 6 },
+  submitRequestBtn: { height: 50, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginTop: 20, elevation: 3, shadowColor: '#000', shadowOffset: {width:0, height:3}, shadowOpacity: 0.15, shadowRadius: 6 },
 });
