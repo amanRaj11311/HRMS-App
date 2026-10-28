@@ -151,32 +151,81 @@ function CustomDrawerContent(props: any) {
     return hasRole || hasPerm;
   };
 
-  const handleLogout = () => {
+ 
+const handleLogout = async () => {
+  try {
+    const savedEnabled = await AsyncStorage.getItem(
+      SAVED_LOGIN_ENABLED
+    );
+
+    // Password save nahi hai: direct logout
+    if (savedEnabled !== "true") {
+      await AsyncStorage.multiRemove(SESSION_KEYS);
+
+      navigation.reset({
+        index: 0,
+        routes: [{ name: "Login" }],
+      });
+
+      return;
+    }
+
+    // Password saved hai: user se confirmation lo
     Alert.alert(
       "Logout",
       "Do you want to keep saved login details on this device?",
       [
-        { text: "Cancel", style: "cancel" },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
         {
           text: "Remove Details",
           style: "destructive",
           onPress: async () => {
-            await AsyncStorage.multiRemove([
-              ...SESSION_KEYS, SAVED_LOGIN_ENABLED, SAVED_LOGIN_EMAIL, SAVED_LOGIN_PASSWORD,
-            ]);
-            navigation.reset({ index: 0, routes: [{ name: "Login" }] });
+            try {
+              await AsyncStorage.multiRemove([
+                ...SESSION_KEYS,
+                SAVED_LOGIN_ENABLED,
+                SAVED_LOGIN_EMAIL,
+                SAVED_LOGIN_PASSWORD,
+              ]);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert("Error", "Unable to logout. Please try again.");
+            }
           },
         },
         {
           text: "Keep Details",
           onPress: async () => {
-            await AsyncStorage.multiRemove(SESSION_KEYS);
-            navigation.reset({ index: 0, routes: [{ name: "Login" }] });
+            try {
+              await AsyncStorage.multiRemove(SESSION_KEYS);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert("Error", "Unable to logout. Please try again.");
+            }
           },
         },
-      ]
+      ],
+      { cancelable: false }
     );
-  };
+  } catch (error) {
+    console.log("Logout check error:", error);
+    Alert.alert("Error", "Unable to logout. Please try again.");
+  }
+};
+
 
   const menuSections = [
     { 

@@ -4,16 +4,12 @@ import Feather from 'react-native-vector-icons/Feather';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../constants/theme';
 import { useFocusEffect } from '@react-navigation/native'; 
-// 🚀 FIXED: Imported the centralized Base API URL to maintain system DRY standards
 import { API_BASE } from '../api/api';
-
-// 🚀 FIXED: Encodes spaces so image loads flawlessly everywhere
 const getCleanAvatarUrl = (url: string) => {
     if (!url) return '';
     let clean = url.replace(/\\/g, '/'); 
     let fullUrl = clean;
     if (!clean.startsWith('http')) {
-        // 🚀 FIXED: Substituted hardcoded host string directly with API_BASE standard mapping
         fullUrl = clean.startsWith('/') ? `${API_BASE.replace('/api', '')}${clean}` : `${API_BASE.replace('/api', '')}/${clean}`;
     }
     return encodeURI(fullUrl); 
@@ -98,48 +94,84 @@ export default function GlobalAppBar({ navigation, onSearch, searchQuery }: any)
   };
 
   // 🚀 NEW: Logout function
-const handleLogout = () => {
+
+const handleLogout = async () => {
   setShowAvatarMenu(false);
 
-  Alert.alert(
-    "Logout",
-    "Do you want to keep saved login details on this device?",
-    [
-      {
-        text: "Cancel",
-        style: "cancel",
-      },
-      {
-        text: "Remove Details",
-        style: "destructive",
-        onPress: async () => {
-          await AsyncStorage.multiRemove([
-            ...SESSION_KEYS,
-            SAVED_LOGIN_ENABLED,
-            SAVED_LOGIN_EMAIL,
-            SAVED_LOGIN_PASSWORD,
-          ]);
+  try {
+    const savedEnabled = await AsyncStorage.getItem(
+      SAVED_LOGIN_ENABLED
+    );
 
-          navigation.reset({
-            index: 0,
-            routes: [{ name: "Login" }],
-          });
-        },
-      },
-      {
-        text: "Keep Details",
-        onPress: async () => {
-          await AsyncStorage.multiRemove(SESSION_KEYS);
+    // Password save nahi hai: direct logout
+    if (savedEnabled !== "true") {
+      await AsyncStorage.multiRemove(SESSION_KEYS);
 
-          navigation.reset({
-            index: 0,
-            routes: [{ name: "Login" }],
-          });
+      navigation.reset({
+        index: 0,
+        routes: [{ name: "Login" }],
+      });
+
+      return;
+    }
+
+    // Password saved hai: user se poochho
+    Alert.alert(
+      "Logout",
+      "Do you want to keep saved login details on this device?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
         },
-      },
-    ]
-  );
+        {
+          text: "Remove Details",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await AsyncStorage.multiRemove([
+                ...SESSION_KEYS,
+                SAVED_LOGIN_ENABLED,
+                SAVED_LOGIN_EMAIL,
+                SAVED_LOGIN_PASSWORD,
+              ]);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert("Error", "Unable to logout. Please try again.");
+            }
+          },
+        },
+        {
+          text: "Keep Details",
+          onPress: async () => {
+            try {
+              // Session clear hogi, saved email/password rahenge
+              await AsyncStorage.multiRemove(SESSION_KEYS);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert("Error", "Unable to logout. Please try again.");
+            }
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  } catch (error) {
+    console.log("Logout check error:", error);
+    Alert.alert("Error", "Unable to logout. Please try again.");
+  }
 };
+
   if (isSearchActive) {
     return (
       <View style={[styles.container, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
@@ -190,8 +222,16 @@ const handleLogout = () => {
       </View>
 
       <View style={styles.rightSection}>
-        <TouchableOpacity style={[styles.avatar, { borderColor: colors.border, borderWidth: 1 }]} onPress={handleAvatarPress}>
-           {userAvatar && !imgError ? (
+<TouchableOpacity
+  style={[
+    styles.avatar,
+    { borderColor: colors.border, borderWidth: 1 },
+  ]}
+  onPress={() => {
+    console.log('Avatar clicked');
+    setShowAvatarMenu(true);
+  }}
+>           {userAvatar && !imgError ? (
                <Image 
                    source={{ uri: userAvatar }} 
                    style={styles.avatarImage} 

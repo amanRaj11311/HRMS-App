@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, 
   StatusBar, Platform, ActivityIndicator, Alert, SafeAreaView, RefreshControl, PermissionsAndroid, Image 
@@ -15,8 +15,27 @@ import GeoTagAttendanceCamera from '../screens/GeoAttendanceCamera'; // adjust p
 
 const { width } = Dimensions.get("window");
 
+const isSuccessfulResponse = (res: any): boolean =>
+  !!res &&
+  res.status >= 200 &&
+  res.status < 300 &&
+  res.data?.success !== false;
+
+
+const extractList = (res: any): any[] | null => {
+  if (!isSuccessfulResponse(res)) return null;
+  const d = res.data?.data;
+  if (Array.isArray(d?.data)) return d.data;
+  if (Array.isArray(d)) return d;
+  return null;
+};
+
 export default function UnifiedDashboard({ navigation }: any) {
   const { colors, isLightMode } = useTheme(); 
+
+  // First-load tracking + latest-request-wins guard (prevents stale overwrites)
+  const hasLoadedOnce = useRef(false);
+  const fetchSeqRef = useRef(0);
   
   const [isPrivileged, setIsPrivileged] = useState(false); 
   const [loading, setLoading] = useState(true);
@@ -52,69 +71,137 @@ const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(false);
   const [pendingLocationName, setPendingLocationName] = useState<string | null>(null);
 
   useFocusEffect(
-    React.useCallback(() => {
-      const today = new Date();
-      setCurrentDate(today.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
-      
-      const timer = setInterval(() => {
-         setLiveTime(
-           new Date().toLocaleTimeString('en-IN', {
-             hour: 'numeric',
-             minute: '2-digit',
-             hour12: true,
-           }).toUpperCase()
-         );
-      }, 1000);
-      
-      autoSyncAndInit();
-      
-      return () => clearInterval(timer);
-    }, [])
-  );
+  React.useCallback(() => {
+    const today = new Date();
 
-  const autoSyncAndInit = async () => {
-      initDashboard();
-      try {
-          const token = await AsyncStorage.getItem('userToken');
-          axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, { 
-              headers: { Authorization: `Bearer ${token}` } 
-          }).catch(() => {}); 
-      } catch (e) {} 
-  };
+    setCurrentDate(
+      today.toLocaleDateString("en-US", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    );
 
-  const initDashboard = async () => {
-      const role = await AsyncStorage.getItem('userRole'); 
-      const name = await AsyncStorage.getItem('userName');
-      const permsStr = await AsyncStorage.getItem('userPermissions');
-      
-      let parsedPerms: string[] = [];
-      if (permsStr) parsedPerms = JSON.parse(permsStr).map((p: string) => p.toUpperCase());
-      
-      const adminPerms = [
-          'EMPLOYEE:CREATE', 'EMPLOYEE:UPDATE', 'EMPLOYEE:DELETE', 
-          'ROLE:CREATE', 'ROLE:UPDATE', 'PAYROLL:CREATE', 
-          'LEAVES:APPROVE', 'LEAVES:UPDATE', 'ATTENDANCE:UPDATE', 
-          'ANALYTICS:VIEW'
-      ];
-      
-      const isActuallyAdminOrHR = parsedPerms.some(p => adminPerms.includes(p));
-      const roleStr = role ? role.toLowerCase() : '';
-      const hasAdminRights = isActuallyAdminOrHR || roleStr === 'admin' || roleStr.includes('super') || roleStr === 'hr';
-      
-      setIsPrivileged(hasAdminRights);
-      
-      if (isActuallyAdminOrHR && roleStr.includes('employee')) setUserRoleDisplay('MANAGEMENT');
-      else if (role) setUserRoleDisplay(role.toUpperCase());
-      
-      if (name) setUserName(name);
-      setPermissions(parsedPerms);
+    const updateClock = () => {
+      setLiveTime(
+        new Date()
+          .toLocaleTimeString("en-IN", {
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+          })
+          .toUpperCase()
+      );
+    };
 
-      // 🚀 Individual self check-in/out permission (default true unless explicitly stored as 'false')
-      const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
-setSelfCheckinAllowed(selfCheckinStr === 'true');
-      
-      await fetchData(hasAdminRights);
-  };
+    updateClock();
+
+    const timer = setInterval(updateClock, 1000);
+
+    // Dashboard focus hone par data load/refresh karo
+    autoSyncAndInit();
+
+    return () => clearInterval(timer);
+  }, [])
+);
+
+const autoSyncAndInit = async () => {
+  // Silent after the first completed attempt, so the existing UI stays visible.
+  await initDashboard(hasLoadedOnce.current);
+
+  // Device attendance sync
+  try {
+    const token = await AsyncStorage.getItem("userToken");
+
+    if (token) {
+      const syncRes = await axios
+        .get(`${API_BASE}/device/attendance?_t=${Date.now()}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          timeout: 20000,
+        })
+        .catch(error => {
+          console.log("Device attendance sync failed:", error);
+          return null;
+        });
+
+      // If the sync worked, silently pull the freshly synced punches.
+      if (isSuccessfulResponse(syncRes)) {
+        await initDashboard(true);
+      }
+    }
+  } catch (error) {
+    console.log("Dashboard sync error:", error);
+  }
+};
+
+ 
+const initDashboard = async (isSilent = false) => {
+  try {
+    const [role, name, permsStr, selfCheckinStr] = await Promise.all([
+      AsyncStorage.getItem('userRole'),
+      AsyncStorage.getItem('userName'),
+      AsyncStorage.getItem('userPermissions'),
+      AsyncStorage.getItem('selfCheckinAllowed'),
+    ]);
+
+    let parsedPerms: string[] = [];
+
+    if (permsStr) {
+      parsedPerms = JSON.parse(permsStr).map(
+        (p: string) => p.toUpperCase()
+      );
+    }
+
+    const adminPerms = [
+      'EMPLOYEE:CREATE',
+      'EMPLOYEE:UPDATE',
+      'EMPLOYEE:DELETE',
+      'ROLE:CREATE',
+      'ROLE:UPDATE',
+      'PAYROLL:CREATE',
+      'LEAVES:APPROVE',
+      'LEAVES:UPDATE',
+      'ATTENDANCE:UPDATE',
+      'ANALYTICS:VIEW',
+    ];
+
+    const isActuallyAdminOrHR = parsedPerms.some(
+      p => adminPerms.includes(p)
+    );
+
+    const roleStr = role ? role.toLowerCase() : '';
+
+    const hasAdminRights =
+      isActuallyAdminOrHR ||
+      roleStr === 'admin' ||
+      roleStr.includes('super') ||
+      roleStr === 'hr';
+
+    setIsPrivileged(hasAdminRights);
+
+    if (isActuallyAdminOrHR && roleStr.includes('employee')) {
+      setUserRoleDisplay('MANAGEMENT');
+    } else if (role) {
+      setUserRoleDisplay(role.toUpperCase());
+    }
+
+    if (name) setUserName(name);
+    setPermissions(parsedPerms);
+    setSelfCheckinAllowed(selfCheckinStr === 'true');
+
+    await fetchData(hasAdminRights, isSilent);
+  } catch (error) {
+    console.log('Dashboard initialization error:', error);
+    // Failed before fetchData ran: make sure we never stay stuck on the loader.
+    hasLoadedOnce.current = true;
+    setLoading(false);
+    setRefreshing(false);
+  }
+};
+
 
   const getSafeDateString = (d: Date) => {
       if (!d) return '--/--/----';
@@ -122,130 +209,158 @@ setSelfCheckinAllowed(selfCheckinStr === 'true');
   };
 
   const fetchData = async (isAdminUser: boolean, isSilent = false) => {
+    const seq = ++fetchSeqRef.current;
+    const isLatest = () => seq === fetchSeqRef.current;
+
     try {
-      if (!isSilent) setLoading(true);
+      if (!isSilent && !hasLoadedOnce.current) {
+        setLoading(true);
+      }
       const token = await AsyncStorage.getItem('userToken');
-      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const config = { headers: { Authorization: `Bearer ${token}` }, timeout: 20000 };
       const ts = Date.now();
+      const now = new Date();
+      const todayStr = now.toDateString();
 
       // 🚀 FETCH ATTENDANCE SETTINGS (source of truth for check-in eligibility + geofence)
       const attSetRes = await axios.get(`${API_BASE}/settings/attendance?_t=${ts}`, config).catch(() => null);
-      if (attSetRes?.data?.data) {
-          setAttSettings(attSetRes.data.data);
+      if (isLatest() && isSuccessfulResponse(attSetRes) && attSetRes?.data?.data) {
+        setAttSettings(attSetRes.data.data);
       }
 
-      const annRes = await axios.get(`${API_BASE}/announcements?limit=50&_t=${ts}`, config).catch(() => null);
-      let rawAnn = annRes?.data?.data?.data || annRes?.data?.data || [];
-      if (!Array.isArray(rawAnn)) rawAnn = [];
-      const sortedAnn = rawAnn.sort((a:any, b:any) => (a.isPinned === b.isPinned) ? 0 : a.isPinned ? -1 : 1);
-      setAnnouncements(sortedAnn);
+      // ── ANNOUNCEMENTS: update only on a validated successful response ──
+      const annRes = await axios
+        .get(`${API_BASE}/announcements?limit=50&_t=${Date.now()}`, config)
+        .catch(error => {
+          console.log('Announcements API failed:', error);
+          return null;
+        });
+      const rawAnn = extractList(annRes);
 
-      let activities: any[] = [];
-      if (sortedAnn.length > 0) {
-          activities.push({
-              icon: 'bullhorn', color: '#3B82F6', title: 'New Announcement', desc: sortedAnn[0].title
-          });
+      if (rawAnn && isLatest()) {
+        const sortedAnn = [...rawAnn].sort(
+          (a: any, b: any) =>
+            a.isPinned === b.isPinned
+              ? 0
+              : a.isPinned
+                ? -1
+                : 1
+        );
+
+        setAnnouncements(sortedAnn);
+
+        const activities: any[] = sortedAnn.length > 0
+          ? [{
+              icon: 'bullhorn',
+              color: '#3B82F6',
+              title: 'New Announcement',
+              desc: sortedAnn[0].title,
+            }]
+          : [];
+
+        setRecentActivities(activities);
       }
-      setRecentActivities(activities);
 
+      // ── SELF ATTENDANCE: no [] fallback; update only on success + valid array ──
       const myAttRes = await axios.get(`${API_BASE}/attendance/self?limit=500&_t=${ts}`, config).catch(() => null);
-      const myAttData = Array.isArray(myAttRes?.data?.data) ? myAttRes.data.data : [];
-      
-      const mappedAttData = myAttData.map((item: any) => {
-        let updated = { ...item };
-        let hasValidCheckOut = true;
+      const myAttData = extractList(myAttRes);
 
-        if (updated.checkIn?.time && updated.checkOut?.time) {
-            const inMs = new Date(updated.checkIn.time).getTime();
-            const outMs = new Date(updated.checkOut.time).getTime();
-            if (Math.abs(outMs - inMs) <= 2000) {
-                updated.checkOut.time = null; updated.workingHours = null; hasValidCheckOut = false; 
+      if (myAttData && isLatest()) {
+        const mappedAttData = myAttData.map((item: any) => {
+          let updated = { ...item };
+          let hasValidCheckOut = true;
+
+          if (updated.checkIn?.time && updated.checkOut?.time) {
+              const inMs = new Date(updated.checkIn.time).getTime();
+              const outMs = new Date(updated.checkOut.time).getTime();
+              if (Math.abs(outMs - inMs) <= 2000) {
+                  updated.checkOut.time = null; updated.workingHours = null; hasValidCheckOut = false; 
+              }
+          } else if (!updated.checkOut?.time) {
+              hasValidCheckOut = false;
+          }
+          
+          if (updated.checkIn?.time) {
+              const punchIn = new Date(updated.checkIn.time);
+              const hour = punchIn.getHours();
+              const min = punchIn.getMinutes();
+              const isLate = (hour > 9 || (hour === 9 && min > 15));
+
+              if (hasValidCheckOut && updated.workingHours !== null && updated.workingHours !== undefined) {
+                  const hours = parseFloat(updated.workingHours);
+                  if (!isNaN(hours) && hours < 4) updated.status = 'half-day';
+                  else updated.status = isLate ? 'late' : 'present';
+              } else {
+                  updated.status = isLate ? 'late' : 'present';
+              }
+          }
+          return updated;
+        });
+
+        const targetMonth = now.getMonth();
+        const targetYear = now.getFullYear();
+        
+        const fetchedMonthRecords = mappedAttData.filter((r: any) => {
+            const d = new Date(r.date || r.checkIn?.time);
+            return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
+        });
+
+        const monthlyMap = new Map();
+        fetchedMonthRecords.forEach((r: any) => {
+            const d = new Date(r.date || r.checkIn?.time);
+            monthlyMap.set(getSafeDateString(d), r);
+        });
+
+        let startDay = 1;
+        if (mappedAttData.length > 0) {
+            const earliestTime = Math.min(...mappedAttData.map((r: any) => new Date(r.date || r.checkIn?.time).getTime()));
+            const earliestDate = new Date(earliestTime);
+            if (earliestDate.getMonth() === targetMonth && earliestDate.getFullYear() === targetYear) {
+                startDay = earliestDate.getDate();
             }
-        } else if (!updated.checkOut?.time) {
-            hasValidCheckOut = false;
+        }
+
+        let p = 0, l = 0, h = 0, w = 0, a = 0;
+        const lastDay = now.getDate();
+        
+        for (let i = startDay; i <= lastDay; i++) {
+            const loopDate = new Date(targetYear, targetMonth, i);
+            const dStr = getSafeDateString(loopDate);
+            
+            if (monthlyMap.has(dStr)) {
+                const rec = monthlyMap.get(dStr);
+                const status = String(rec.status || '').toLowerCase();
+                if(status === 'present') p++;
+                else if(status === 'late') l++;
+                else if(status === 'half-day' || status === 'halfday') h++;
+                else if(status === 'wfh' || status === 'remote' || status === 'work-from-home') w++;
+                else if(status === 'absent') a++;
+            } else {
+                const dayOfWeek = loopDate.getDay();
+                let isWeekOff = false;
+                
+                if (dayOfWeek === 0) {
+                    isWeekOff = true; 
+                } else if (dayOfWeek === 6) {
+                    const cutoffDate = new Date(2026, 5, 8); 
+                    if (loopDate > cutoffDate) {
+                        isWeekOff = true;
+                    }
+                }
+
+                if (!isWeekOff) {
+                    a++; 
+                }
+            }
         }
         
-        if (updated.checkIn?.time) {
-            const punchIn = new Date(updated.checkIn.time);
-            const hour = punchIn.getHours();
-            const min = punchIn.getMinutes();
-            const isLate = (hour > 9 || (hour === 9 && min > 15));
+        setMonthlyStats({ present: p, late: l, halfDay: h, wfh: w, absent: a, total: p+l+h+w+a });
 
-            if (hasValidCheckOut && updated.workingHours !== null && updated.workingHours !== undefined) {
-                const hours = parseFloat(updated.workingHours);
-                if (!isNaN(hours) && hours < 4) updated.status = 'half-day';
-                else updated.status = isLate ? 'late' : 'present';
-            } else {
-                updated.status = isLate ? 'late' : 'present';
-            }
-        }
-        return updated;
-      });
-
-      const now = new Date();
-      const targetMonth = now.getMonth();
-      const targetYear = now.getFullYear();
-      
-      const fetchedMonthRecords = mappedAttData.filter((r: any) => {
-          const d = new Date(r.date || r.checkIn?.time);
-          return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
-      });
-
-      const monthlyMap = new Map();
-      fetchedMonthRecords.forEach((r: any) => {
-          const d = new Date(r.date || r.checkIn?.time);
-          monthlyMap.set(getSafeDateString(d), r);
-      });
-
-      let startDay = 1;
-      if (mappedAttData.length > 0) {
-          const earliestTime = Math.min(...mappedAttData.map((r: any) => new Date(r.date || r.checkIn?.time).getTime()));
-          const earliestDate = new Date(earliestTime);
-          if (earliestDate.getMonth() === targetMonth && earliestDate.getFullYear() === targetYear) {
-              startDay = earliestDate.getDate();
-          }
+        const todayRec = mappedAttData.find((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
+        setTodayRecord(todayRec ?? null); // valid response with no record today => genuinely not checked in
       }
 
-      let p = 0, l = 0, h = 0, w = 0, a = 0;
-      const lastDay = now.getDate();
-      
-      for (let i = startDay; i <= lastDay; i++) {
-          const loopDate = new Date(targetYear, targetMonth, i);
-          const dStr = getSafeDateString(loopDate);
-          
-          if (monthlyMap.has(dStr)) {
-              const rec = monthlyMap.get(dStr);
-              const status = String(rec.status || '').toLowerCase();
-              if(status === 'present') p++;
-              else if(status === 'late') l++;
-              else if(status === 'half-day' || status === 'halfday') h++;
-              else if(status === 'wfh' || status === 'remote' || status === 'work-from-home') w++;
-              else if(status === 'absent') a++;
-         } else {
-              const dayOfWeek = loopDate.getDay();
-              let isWeekOff = false;
-              
-              if (dayOfWeek === 0) {
-                  isWeekOff = true; 
-              } else if (dayOfWeek === 6) {
-                  const cutoffDate = new Date(2026, 5, 8); 
-                  if (loopDate > cutoffDate) {
-                      isWeekOff = true;
-                  }
-              }
-
-              if (!isWeekOff) {
-                  a++; 
-              }
-          }
-      }
-      
-      setMonthlyStats({ present: p, late: l, halfDay: h, wfh: w, absent: a, total: p+l+h+w+a });
-
-      const todayStr = now.toDateString();
-      let todayRec = mappedAttData.find((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
-      setTodayRecord(todayRec);
-
+      // ── ADMIN: each API updates only its own section ──
       if (isAdminUser) {
           const pad = (n: number) => n < 10 ? '0' + n : n;
           const todayDateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -256,47 +371,62 @@ setSelfCheckinAllowed(selfCheckinStr === 'true');
               axios.get(`${API_BASE}/leaves?limit=500&_t=${ts}`, config).catch(() => null)
           ]);
 
-          const allEmps = Array.isArray(empRes?.data?.data?.data) ? empRes.data.data.data : (Array.isArray(empRes?.data?.data) ? empRes.data.data : []);
-          const totalEmployees = allEmps.length;
-          const totalHR = allEmps.filter((e: any) => (e.department || '').toLowerCase().includes('hr') || (e.department || '').toLowerCase().includes('human resource')).length;
-          
-          const allAtt = Array.isArray(allAttRes?.data?.data?.data) ? allAttRes.data.data.data : (Array.isArray(allAttRes?.data?.data) ? allAttRes.data.data : []);
-          const presentToday = allAtt.filter((att: any) => {
-              if (new Date(att.date || att.checkIn?.time).toDateString() !== todayStr) return false;
-              let status = (att.status || '').toLowerCase();
-              if (att.checkIn?.time) {
-                  const outMs = att.checkOut?.time ? new Date(att.checkOut.time).getTime() : null;
-                  const inMs = new Date(att.checkIn.time).getTime();
-                  const isVoid = outMs && (Math.abs(outMs - inMs) <= 2000);
-                  const validOut = outMs && !isVoid;
-                  
-                  const punchIn = new Date(att.checkIn.time);
-                  const hour = punchIn.getHours();
-                  const min = punchIn.getMinutes();
-                  const isLate = (hour > 9 || (hour === 9 && min > 20));
+          // Employees
+          const allEmps = extractList(empRes);
+          if (allEmps && isLatest()) {
+              const totalEmployees = allEmps.length;
+              const totalHR = allEmps.filter((e: any) => (e.department || '').toLowerCase().includes('hr') || (e.department || '').toLowerCase().includes('human resource')).length;
+              setAdminStats((prev: any) => ({ ...prev, totalEmployees, totalHR }));
+              setRecentEmployees(allEmps.slice(0, 5)); 
+          }
 
-                  if (validOut && att.workingHours !== null && att.workingHours !== undefined) {
-                      const hours = parseFloat(att.workingHours);
-                      if (!isNaN(hours) && hours < 8) status = 'half-day';
-                      else status = isLate ? 'late' : 'present';
-                  } else {
-                      status = isLate ? 'late' : 'present';
+          // Today's attendance
+          const allAtt = extractList(allAttRes);
+          if (allAtt && isLatest()) {
+              const presentToday = allAtt.filter((att: any) => {
+                  if (new Date(att.date || att.checkIn?.time).toDateString() !== todayStr) return false;
+                  let status = (att.status || '').toLowerCase();
+                  if (att.checkIn?.time) {
+                      const outMs = att.checkOut?.time ? new Date(att.checkOut.time).getTime() : null;
+                      const inMs = new Date(att.checkIn.time).getTime();
+                      const isVoid = outMs && (Math.abs(outMs - inMs) <= 2000);
+                      const validOut = outMs && !isVoid;
+                      
+                      const punchIn = new Date(att.checkIn.time);
+                      const hour = punchIn.getHours();
+                      const min = punchIn.getMinutes();
+                      const isLate = (hour > 9 || (hour === 9 && min > 20));
+
+                      if (validOut && att.workingHours !== null && att.workingHours !== undefined) {
+                          const hours = parseFloat(att.workingHours);
+                          if (!isNaN(hours) && hours < 8) status = 'half-day';
+                          else status = isLate ? 'late' : 'present';
+                      } else {
+                          status = isLate ? 'late' : 'present';
+                      }
                   }
-              }
-              return ['present', 'late', 'half-day'].includes(status);
-          }).length;
+                  return ['present', 'late', 'half-day'].includes(status);
+              }).length;
+              setAdminStats((prev: any) => ({ ...prev, presentToday }));
+          }
 
-          const allLeaves = Array.isArray(leaveRes?.data?.data?.data) ? leaveRes.data.data.data : (Array.isArray(leaveRes?.data?.data) ? leaveRes.data.data : []);
-          const pLeaves = allLeaves.filter((l: any) => (l.status || '').toLowerCase() === 'pending');
-
-          setAdminStats({ totalEmployees, presentToday, pendingLeaves: pLeaves.length, totalHR });
-          setRecentEmployees(allEmps.slice(0, 5)); 
-          setPendingLeavesList(pLeaves.slice(0, 3)); 
+          // Leaves
+          const allLeaves = extractList(leaveRes);
+          if (allLeaves && isLatest()) {
+              const pLeaves = allLeaves.filter((l: any) => (l.status || '').toLowerCase() === 'pending');
+              setAdminStats((prev: any) => ({ ...prev, pendingLeaves: pLeaves.length }));
+              setPendingLeavesList(pLeaves.slice(0, 3)); 
+          }
       }
     } catch (e: any) { 
         console.log("Dashboard Fetch Error:", e);
-    } finally { 
-        setLoading(false); setRefreshing(false); 
+    } finally {
+      // Only the latest request resets flags, so a superseded request can't hide a loader that's still needed.
+      if (isLatest()) {
+        hasLoadedOnce.current = true;
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
@@ -310,7 +440,7 @@ setSelfCheckinAllowed(selfCheckinStr === 'true');
                       setLoading(true);
                       const token = await AsyncStorage.getItem('userToken');
                       await axios.put(`${API_BASE}/leaves/${leaveId}`, { status: newStatus }, { headers: { Authorization: `Bearer ${token}` } });
-                      initDashboard(); 
+                      initDashboard(true); 
                   } catch (e: any) {
                       Alert.alert("Error", e.response?.data?.message || "Failed to update leave.");
                   } finally { setLoading(false); }
@@ -346,20 +476,12 @@ setSelfCheckinAllowed(selfCheckinStr === 'true');
     }
   };
 
-  // 🚀 Step 1 (permission gate) — does this employee have Self Check-In/Check-Out
-  // permission at all? Computed from RBAC permissions, independent of the admin's
-  // global toggle (attSettings.checkinEnabled) and the individual flag (selfCheckinAllowed),
-  // both of which are checked further down in handlePunch / at render time.
   const hasSelfCheckinPermission = permissions.some(p => p.includes('ATTENDANCE:SELF'));
 const canSelfCheckin =
   hasSelfCheckinPermission &&
   selfCheckinAllowed === true &&
   attSettings?.checkinEnabled === true;
   const handlePunch = async () => {
-    // ── Step 1: Permission check — must happen before anything else, including
-    // starting the location workflow. If the employee has no Self Check-In/Check-Out
-    // permission at all, stop here. (The button itself is also hidden for this case —
-    // see the render logic below — this is a defensive second check.)
     if (!hasSelfCheckinPermission) {
       return Alert.alert(
         "Not Allowed",
@@ -375,8 +497,6 @@ const canSelfCheckin =
       );
     }
 
-    // 2) Individual (per-employee) flag — even if org-wide is enabled, this specific employee
-    //    may be excluded from self check-in/out.
     if (selfCheckinAllowed === false) {
       return Alert.alert(
         "Not Allowed",
@@ -587,8 +707,8 @@ const handlePhotoCaptured = async (fileUri: string) => {
   );
 
   const syncBiometricAndRefresh = async () => {
+    setRefreshing(true);
     try {
-        setRefreshing(true);
         const token = await AsyncStorage.getItem('userToken');
         const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
         
@@ -598,15 +718,20 @@ const handlePhotoCaptured = async (fileUri: string) => {
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache',
                 'Expires': '0'
-            } 
+            },
+            timeout: 20000,
         }).catch(() => {});
 
     } catch (error) {
        console.log('Error during biometric sync refresh', error);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    await initDashboard(); 
+    try {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        await initDashboard(true); // silent: no full-screen loader, UI stays visible
+    } finally {
+        setRefreshing(false); // always reset, even if something throws
+    }
   };
 
   return (

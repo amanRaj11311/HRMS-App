@@ -46,6 +46,26 @@ const getCleanAvatarUrl = (url: string) => {
 };
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const SAVED_LOGIN_ENABLED = "savedLoginEnabled";
+const SAVED_LOGIN_EMAIL = "savedLoginEmail";
+const SAVED_LOGIN_PASSWORD = "savedLoginPassword";
+
+const SESSION_KEYS = [
+  "userToken",
+  "userId",
+  "employeeId",
+  "userName",
+  "userRole",
+  "userPermissions",
+  "keepLoggedIn",
+  "userDesignation",
+  "userDepartment",
+  "userDoj",
+  "userBankAcc",
+  "userBankName",
+  "userBankIfsc",
+  "userAvatar",
+];
 
 export default function SettingsScreen({ navigation }: any) {
   const { colors, isLightMode, toggleTheme } = useTheme(); 
@@ -110,149 +130,231 @@ export default function SettingsScreen({ navigation }: any) {
     { label: 'National', value: 'national' },
   ];
 
-  const fetchExactRoleName = async (roleData: any, token: string) => {
-      if (!roleData) return '';
-      if (typeof roleData === 'object' && roleData.name) return roleData.name; 
-      
-      if (typeof roleData === 'string' && isMongoId(roleData)) {
-          try {
-              const res = await axios.get(`${API_BASE}/role/${roleData}`, { headers: { Authorization: `Bearer ${token}` } });
-              return res.data?.data?.name || res.data?.name || '';
-          } catch (e) {
-              return '';
-          }
-      }
-      return typeof roleData === 'string' ? roleData : '';
-  };
+ const fetchExactRoleName = async (roleData: any) => {
+  if (!roleData) return '';
 
-  const fetchUserData = async (isSilent = false) => {
+  if (typeof roleData === 'object' && roleData.name) {
+    return roleData.name;
+  }
+
+  if (typeof roleData === 'string' && isMongoId(roleData)) {
     try {
-      if (!isSilent) setLoading(true);
-      
-      const token = await AsyncStorage.getItem('userToken');
-      let storedEmpId = await AsyncStorage.getItem('employeeId') || '';
-      let storedUserId = await AsyncStorage.getItem('userId') || '';
-      let localRoleName = await AsyncStorage.getItem('userRole') || 'User';
-
-      if (!token) {
-         Alert.alert("Session Expired", "Please login again.");
-         handleLogout();
-         return;
-      }
-
-      let decodedId = storedUserId;
-      let decodedRoleId = '';
-      let finalFName = 'User';
-      let finalLName = '';
-      let finalEmail = await AsyncStorage.getItem('userEmail') || '';
-      let finalAvatar = await AsyncStorage.getItem('userAvatar') || '';
-
-      const userName = await AsyncStorage.getItem('userName');
-      if (userName) {
-          const parts = userName.split(' ');
-          finalFName = parts[0];
-          finalLName = parts.slice(1).join(' ');
-      }
-
-      const decoded = safeDecodeJWT(token);
-      if (decoded) {
-          decodedId = decodedId || decoded.id || decoded._id || decoded.userId;
-          decodedRoleId = decoded.role || decoded.roleId || '';
-          finalFName = decoded.firstName || finalFName;
-          finalLName = decoded.lastName || finalLName;
-          finalEmail = decoded.email || finalEmail;
-      }
-
-      setUserId(decodedId);
-      setEmpId(storedEmpId);
-
-      const adminCheck = String(localRoleName).toUpperCase().includes('ADMIN');
-      setIsAdmin(adminCheck);
-
-      if (decodedId && isMongoId(decodedId)) {
-          const config = { headers: { Authorization: `Bearer ${token}` } };
-          let fetchedUserObj: any = {};
-          let fetchedEmpObj: any = {};
-
-          try {
-             const userRes = await axios.get(`${API_BASE}/users/${decodedId}?_t=${Date.now()}`, config);
-             fetchedUserObj = userRes.data?.data || userRes.data || {};
-          } catch(e) {}
-
-          if (storedEmpId && isMongoId(storedEmpId)) {
-              try {
-                  const empRes = await axios.get(`${API_BASE}/employees/${storedEmpId}?_t=${Date.now()}`, config);
-                  fetchedEmpObj = empRes.data?.data || empRes.data || {};
-              } catch(e) {}
-          } else {
-              try {
-                  const empListRes = await axios.get(`${API_BASE}/employees?userId=${decodedId}&limit=1`, config);
-                  const empList = empListRes.data?.data?.data || empListRes.data?.data || [];
-                  if(empList.length > 0) fetchedEmpObj = empList[0];
-              } catch(e) {}
-          }
-
-          setFullEmployeeData(fetchedEmpObj);
-
-          finalFName = fetchedEmpObj.firstName || fetchedUserObj.firstName || finalFName;
-          finalLName = fetchedEmpObj.lastName || fetchedUserObj.lastName || finalLName;
-          finalEmail = fetchedEmpObj.email || fetchedUserObj.email || finalEmail;
-          
-          let rawAvatar = fetchedEmpObj.avatarUrl || fetchedEmpObj.avatar || fetchedUserObj.avatar || finalAvatar;
-          finalAvatar = getCleanAvatarUrl(rawAvatar);
-          
-          let finalDept = fetchedEmpObj.department || '';
-          if (!finalDept) finalDept = adminCheck ? 'Administration' : 'Not Assigned';
-
-          let finalRole = localRoleName;
-          const roleSource = fetchedUserObj.role || fetchedEmpObj.designation || decodedRoleId;
-          
-          if (adminCheck && !fetchedEmpObj._id) {
-              finalRole = 'Super Admin';
-          } else {
-              const exactRole = await fetchExactRoleName(roleSource, token);
-              if (exactRole) finalRole = exactRole;
-          }
-
-          setProfileData({
-              firstName: finalFName,
-              lastName: finalLName,
-              email: finalEmail,
-              avatar: finalAvatar,
-              department: finalDept
-          });
-
-          setUserRole(finalRole);
-          setUserInitials(`${finalFName.charAt(0) || ''}${finalLName.charAt(0) || ''}`.toUpperCase() || 'U');
-      }
-
+      const res = await axios.get(`${API_BASE}/role/${roleData}`);
+      return res.data?.data?.name || res.data?.name || '';
     } catch (error) {
-      console.log("Settings Fetch logic error", error);
-    } finally {
-      if (!isSilent) setLoading(false);
-      setRefreshing(false);
+      console.log('Fetch role error:', error);
+      return '';
     }
-  };
+  }
 
-  useFocusEffect(useCallback(() => { 
-      fetchUserData(); 
-  }, []));
+  return typeof roleData === 'string' ? roleData : '';
+};
+  const fetchUserData = useCallback(async (isSilent = false) => {
+  try {
+    if (!isSilent) setLoading(true);
+
+    const storedEmpId =
+      (await AsyncStorage.getItem('employeeId')) || '';
+
+    const storedUserId =
+      (await AsyncStorage.getItem('userId')) || '';
+
+    const localRoleName =
+      (await AsyncStorage.getItem('userRole')) || 'EMPLOYEE';
+
+    const storedName =
+      (await AsyncStorage.getItem('userName')) || 'User';
+
+    const storedEmail =
+      (await AsyncStorage.getItem('userEmail')) || '';
+
+    const storedAvatar =
+      (await AsyncStorage.getItem('userAvatar')) || '';
+
+    const nameParts = storedName.trim().split(/\s+/);
+
+    let finalFName = nameParts[0] || 'User';
+    let finalLName = nameParts.slice(1).join(' ');
+    let finalEmail = storedEmail;
+    let finalAvatar = getCleanAvatarUrl(storedAvatar);
+    let finalDept = 'Not Assigned';
+    let finalRole = localRoleName;
+
+    const adminCheck = localRoleName
+      .toUpperCase()
+      .includes('ADMIN');
+
+    setUserId(storedUserId);
+    setEmpId(storedEmpId);
+    setIsAdmin(adminCheck);
+
+    // Load locally saved profile first.
+    // This does not depend on userToken.
+    setProfileData({
+      firstName: finalFName,
+      lastName: finalLName,
+      email: finalEmail,
+      avatar: finalAvatar,
+      department: adminCheck ? 'Administration' : finalDept,
+    });
+
+    setUserRole(finalRole);
+    setUserInitials(
+      `${finalFName.charAt(0)}${finalLName.charAt(0)}`
+        .toUpperCase() || 'U'
+    );
+
+    let fetchedUserObj: any = {};
+    let fetchedEmpObj: any = {};
+
+    // Fetch fresh profile data if the stored IDs are valid.
+    // These requests assume the backend permits requests without
+    // a Bearer token. If it doesn't, its API contract must change.
+    if (storedUserId && isMongoId(storedUserId)) {
+      try {
+        const userRes = await axios.get(
+          `${API_BASE}/users/${storedUserId}?_t=${Date.now()}`
+        );
+
+        fetchedUserObj =
+          userRes.data?.data || userRes.data || {};
+      } catch (error) {
+        console.log('User profile fetch error:', error);
+      }
+    }
+
+    if (storedEmpId && isMongoId(storedEmpId)) {
+      try {
+        const empRes = await axios.get(
+          `${API_BASE}/employees/${storedEmpId}?_t=${Date.now()}`
+        );
+
+        fetchedEmpObj =
+          empRes.data?.data || empRes.data || {};
+      } catch (error) {
+        console.log('Employee profile fetch error:', error);
+      }
+    } else if (storedUserId && isMongoId(storedUserId)) {
+      try {
+        const empRes = await axios.get(
+          `${API_BASE}/employees?userId=${storedUserId}&limit=1`
+        );
+
+        const empList =
+          empRes.data?.data?.data ||
+          empRes.data?.data ||
+          [];
+
+        if (Array.isArray(empList) && empList.length > 0) {
+          fetchedEmpObj = empList[0];
+        }
+      } catch (error) {
+        console.log('Employee list fetch error:', error);
+      }
+    }
+
+    setFullEmployeeData(fetchedEmpObj);
+
+    finalFName =
+      fetchedEmpObj.firstName ||
+      fetchedUserObj.firstName ||
+      finalFName;
+
+    finalLName =
+      fetchedEmpObj.lastName ||
+      fetchedUserObj.lastName ||
+      finalLName;
+
+    finalEmail =
+      fetchedEmpObj.email ||
+      fetchedUserObj.email ||
+      finalEmail;
+
+    const rawAvatar =
+      fetchedEmpObj.avatarUrl ||
+      fetchedEmpObj.avatar ||
+      fetchedUserObj.avatar ||
+      storedAvatar;
+
+    finalAvatar = getCleanAvatarUrl(rawAvatar);
+
+    const department = fetchedEmpObj.department;
+
+    if (department) {
+      finalDept =
+        typeof department === 'object'
+          ? department.name || 'Not Assigned'
+          : department;
+    } else {
+      finalDept = adminCheck
+        ? 'Administration'
+        : 'Not Assigned';
+    }
+
+    const roleSource =
+      fetchedUserObj.role ||
+      fetchedEmpObj.designation;
+
+    if (adminCheck && !fetchedEmpObj._id) {
+      finalRole = 'Super Admin';
+    } else {
+      const exactRole = await fetchExactRoleName(roleSource);
+
+      if (exactRole) {
+        finalRole = exactRole;
+      }
+    }
+
+    setProfileData({
+      firstName: finalFName,
+      lastName: finalLName,
+      email: finalEmail,
+      avatar: finalAvatar,
+      department: finalDept,
+    });
+
+    setUserRole(finalRole);
+
+    setUserInitials(
+      `${finalFName.charAt(0)}${finalLName.charAt(0)}`
+        .toUpperCase() || 'U'
+    );
+  } catch (error) {
+    console.log('Settings fetch logic error:', error);
+  } finally {
+    if (!isSilent) setLoading(false);
+    setRefreshing(false);
+   }
+}, []);
+useEffect(() => {
+  fetchUserData();
+}, [fetchUserData]);
 
   useEffect(() => {
     if (activeTab === 'Attendance' && isAdmin) fetchAttendanceSettings();
     if (activeTab === 'Holidays' && isAdmin) fetchHolidays();
   }, [activeTab, isAdmin]);
+const onRefresh = useCallback(async () => {
+  setRefreshing(true);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
+  try {
     await fetchUserData(true);
-    if (activeTab === 'Attendance' && isAdmin) await fetchAttendanceSettings();
-    if (activeTab === 'Holidays' && isAdmin) await fetchHolidays();
-  }, [activeTab, isAdmin]);
+
+    if (activeTab === 'Attendance' && isAdmin) {
+      await fetchAttendanceSettings();
+    }
+
+    if (activeTab === 'Holidays' && isAdmin) {
+      await fetchHolidays();
+    }
+  } finally {
+    setRefreshing(false);
+  }
+}, [fetchUserData, activeTab, isAdmin]);
 
   const fetchAttendanceSettings = async () => {
     try {
-      setLoading(true);
+      
       const token = await AsyncStorage.getItem('userToken');
       const res = await axios.get(`${API_BASE}/settings/attendance`, { headers: { Authorization: `Bearer ${token}` } });
       
@@ -447,7 +549,7 @@ export default function SettingsScreen({ navigation }: any) {
     } catch(e) { 
       console.log('Holidays fetch error', e); 
     } finally {
-      setLoading(false);
+    
     }
   };
 
@@ -588,7 +690,7 @@ export default function SettingsScreen({ navigation }: any) {
       Alert.alert("Sync Error", errorMsg);
     } finally {
       setSaveLoading(false);
-      fetchUserData(true); 
+     
     }
   };
 
@@ -628,18 +730,88 @@ export default function SettingsScreen({ navigation }: any) {
       }
   };
 
-  const handleLogout = () => {
-    Alert.alert("Logout", "Are you sure you want to exit your session?", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Logout", style: "destructive", onPress: async () => {
-            await AsyncStorage.clear(); 
-            navigation.reset({ index: 0, routes: [{ name: 'Login' }] }); 
-          }
-        }
-      ]
+const handleLogout = async () => {
+  try {
+    const savedEnabled = await AsyncStorage.getItem(
+      SAVED_LOGIN_ENABLED
     );
-  };
 
+    // Password saved nahi hai: direct logout
+    if (savedEnabled !== "true") {
+      await AsyncStorage.multiRemove(SESSION_KEYS);
+
+      navigation.reset({
+        index: 0,
+        routes: [{ name: "Login" }],
+      });
+
+      return;
+    }
+
+    // Password saved hai: user se poochho
+    Alert.alert(
+      "Logout",
+      "Do you want to keep saved login details on this device?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Remove Details",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await AsyncStorage.multiRemove([
+                ...SESSION_KEYS,
+                SAVED_LOGIN_ENABLED,
+                SAVED_LOGIN_EMAIL,
+                SAVED_LOGIN_PASSWORD,
+              ]);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert(
+                "Error",
+                "Unable to logout. Please try again."
+              );
+            }
+          },
+        },
+        {
+          text: "Keep Details",
+          onPress: async () => {
+            try {
+              await AsyncStorage.multiRemove(SESSION_KEYS);
+
+              navigation.reset({
+                index: 0,
+                routes: [{ name: "Login" }],
+              });
+            } catch (error) {
+              console.log("Logout error:", error);
+              Alert.alert(
+                "Error",
+                "Unable to logout. Please try again."
+              );
+            }
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  } catch (error) {
+    console.log("Logout check error:", error);
+    Alert.alert(
+      "Error",
+      "Unable to logout. Please try again."
+    );
+  }
+};
   const renderContent = () => {
       if (activeTab === 'Profile') {
           return (

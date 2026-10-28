@@ -31,7 +31,7 @@ const AnimatedTouchableOpacity =
 const SAVED_LOGIN_ENABLED = "savedLoginEnabled";
 const SAVED_LOGIN_EMAIL = "savedLoginEmail";
 const SAVED_LOGIN_PASSWORD = "savedLoginPassword";
-const LOGIN_SAVE_ASKED = "loginSaveAsked";
+
 
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState("");
@@ -87,7 +87,6 @@ export default function LoginScreen({ navigation }: any) {
     await AsyncStorage.setItem(SAVED_LOGIN_ENABLED, "true");
     await AsyncStorage.setItem(SAVED_LOGIN_EMAIL, loginEmail);
     await AsyncStorage.setItem(SAVED_LOGIN_PASSWORD, loginPassword);
-    await AsyncStorage.setItem(LOGIN_SAVE_ASKED, "true");
   };
 
   const removeSavedLoginDetails = async () => {
@@ -97,7 +96,6 @@ export default function LoginScreen({ navigation }: any) {
       SAVED_LOGIN_PASSWORD,
     ]);
 
-    await AsyncStorage.setItem(LOGIN_SAVE_ASKED, "true");
   };
 
   const goToDashboard = () => {
@@ -136,152 +134,150 @@ export default function LoginScreen({ navigation }: any) {
     );
   };
 
-  const handleLogin = async () => {
-    if (!email.trim() || !password) {
-      Animated.sequence([
-        Animated.timing(formTranslateX, {
-          toValue: -10,
-          duration: 50,
-          useNativeDriver: true,
-        }),
-        Animated.timing(formTranslateX, {
-          toValue: 10,
-          duration: 50,
-          useNativeDriver: true,
-        }),
-        Animated.timing(formTranslateX, {
-          toValue: 0,
-          duration: 50,
-          useNativeDriver: true,
-        }),
-      ]).start();
+  
+const handleLogin = async () => {
+  if (!email.trim() || !password) {
+    Alert.alert("Required", "Please enter Email and Password");
+    return;
+  }
 
-      return Alert.alert("Required", "Please enter Email and Password");
+  const loginEmail = email.trim().toLowerCase();
+
+  setLoginStatus("loading");
+
+  Animated.timing(buttonWidth, {
+    toValue: 56,
+    duration: 300,
+    useNativeDriver: false,
+  }).start();
+
+  try {
+    const response = await axios.post(
+      `${API_BASE}/auth/login`,
+      {
+        email: loginEmail,
+        password,
+      },
+      { timeout: 15000 }
+    );
+
+    const { user, token } = response.data;
+
+    if (!response.data.success || !user) {
+      throw new Error(
+        response.data.message || "Invalid login response"
+      );
     }
 
-    const loginEmail = email.trim().toLowerCase();
-    const loginPassword = password;
+    // Save token only when backend provides one
+    if (token) {
+      await AsyncStorage.setItem("userToken", token);
+    }
 
-    setLoginStatus("loading");
+    await AsyncStorage.setItem(
+      "userId",
+      String(user.id || user._id || "")
+    );
+    await AsyncStorage.setItem(
+      "employeeId",
+      String(user.employeeId || user.id || "")
+    );
+    await AsyncStorage.setItem(
+      "userName",
+      `${user.firstName || ""} ${user.lastName || ""}`.trim()
+    );
+    await AsyncStorage.setItem(
+      "userRole",
+      String(user.roleName || user.role || "EMPLOYEE").toUpperCase()
+    );
+    await AsyncStorage.setItem(
+      "userPermissions",
+      JSON.stringify(user.permissions || [])
+    );
+    await AsyncStorage.setItem(
+      "selfCheckinAllowed",
+      String(user.selfCheckinAllowed === true)
+    );
 
+    if (user.avatar) {
+      await AsyncStorage.setItem("userAvatar", user.avatar);
+    } else {
+      await AsyncStorage.removeItem("userAvatar");
+    }
+
+    
+
+setLoginStatus("success");
+
+if (remember) {
+  Alert.alert(
+    "Save Login Details?",
+    "Do you want to save your email and password on this device for your next login?",
+    [
+      {
+        text: "No",
+        style: "cancel",
+        onPress: async () => {
+          try {
+            await removeSavedLoginDetails();
+            setRemember(false);
+          } catch (error) {
+            console.log("Remove saved login error:", error);
+          } finally {
+            goToDashboard();
+          }
+        },
+      },
+      {
+        text: "Yes, Save",
+        onPress: async () => {
+          try {
+            await saveLoginDetails(loginEmail, password);
+            setRemember(true);
+          } catch (error) {
+            console.log("Save login error:", error);
+            Alert.alert(
+              "Warning",
+              "Login successful, but login details could not be saved."
+            );
+          } finally {
+            goToDashboard();
+          }
+        },
+      },
+    ],
+    { cancelable: false }
+  );
+} else {
+  // Checkbox unchecked: do not save the password.
+  try {
+    await removeSavedLoginDetails();
+  } catch (error) {
+    console.log("Remove saved login error:", error);
+  } finally {
+    setRemember(false);
+    goToDashboard();
+  }
+}
+
+
+  } catch (error: any) {
     Animated.timing(buttonWidth, {
-      toValue: 56,
+      toValue: screenWidth - 60,
       duration: 300,
       useNativeDriver: false,
-    }).start();
+    }).start(() => {
+      setLoginStatus("idle");
+      Alert.alert(
+        "Login Failed",
+        error.response?.data?.message ||
+          error.message ||
+          "Unable to login. Please try again."
+      );
+    });
+  }
+};
 
-    try {
-      const response = await axios.post(`${API_BASE}/auth/login`, {
-        email: loginEmail,
-        password: loginPassword,
-      });
-
-      const { token, user } = response.data;
-
-      if (token && user) {
-        let extractedRole = "EMPLOYEE";
-
-        // 🚀 FIXED: Ab yahan par 'roleName' ko sabse pehle check karega
-        if (user.roleName) {
-            extractedRole = user.roleName;
-        } else if (user.role) {
-          if (typeof user.role === "string") {
-            extractedRole = user.role;
-          } else if (user.role.name) {
-            extractedRole = user.role.name;
-          }
-        }
-
-        await AsyncStorage.setItem("userToken", token);
-        await AsyncStorage.setItem("userId", String(user.id || user._id || ""));
-        await AsyncStorage.setItem(
-          "employeeId",
-          String(user.employeeId || user.id || "")
-        );
-        await AsyncStorage.setItem(
-          "userName",
-          `${user.firstName || ""} ${user.lastName || ""}`.trim()
-        );
-        
-        // Save the correct role
-        await AsyncStorage.setItem("userRole", extractedRole.toUpperCase());
-        
-        await AsyncStorage.setItem(
-          "userPermissions",
-          JSON.stringify(user.permissions || [])
-        );
-        // Save self check-in/out permission from login response
-await AsyncStorage.setItem(
-  "selfCheckinAllowed",
-  String(user.selfCheckinAllowed === true)
-);
-
-        // This is only for token/session preference
-        await AsyncStorage.setItem("keepLoggedIn", remember ? "true" : "false");
-
-        await AsyncStorage.setItem(
-          "userDesignation",
-          String(user.designation || "N/A")
-        );
-        await AsyncStorage.setItem(
-          "userDepartment",
-          String(user.department || "N/A")
-        );
-        await AsyncStorage.setItem("userDoj", String(user.dateOfJoining || ""));
-
-        const bank = user.bankDetails || {};
-        await AsyncStorage.setItem(
-          "userBankAcc",
-          String(bank.accountNumber || "-")
-        );
-        await AsyncStorage.setItem(
-          "userBankName",
-          String(bank.bankName || "-")
-        );
-        await AsyncStorage.setItem(
-          "userBankIfsc",
-          String(bank.ifscCode || "-")
-        );
-
-        if (user.avatar) {
-          await AsyncStorage.setItem("userAvatar", user.avatar);
-        } else {
-          await AsyncStorage.removeItem("userAvatar");
-        }
-
-        setLoginStatus("success");
-
-        const alreadyAsked = await AsyncStorage.getItem(LOGIN_SAVE_ASKED);
-
-        // First time successful login ke baad user se ask karega
-        if (alreadyAsked !== "true") {
-          askSaveLoginDetailsFirstTime(loginEmail, loginPassword);
-          return;
-        }
-
-        // Agar user ne checkbox ON rakha hai to details save/update hongi
-        if (remember) {
-          await saveLoginDetails(loginEmail, loginPassword);
-        } else {
-          await removeSavedLoginDetails();
-        }
-
-        goToDashboard();
-      }
-    } catch (error: any) {
-      Animated.timing(buttonWidth, {
-        toValue: screenWidth - 60,
-        duration: 300,
-        useNativeDriver: false,
-      }).start(() => {
-        setLoginStatus("idle");
-        Alert.alert(
-          "Login Failed",
-          error.response?.data?.message || "Invalid credentials"
-        );
-      });
-    }
-  };
 
   const getEntranceStyle = (index: number) => ({
     opacity: entranceAnims[index],

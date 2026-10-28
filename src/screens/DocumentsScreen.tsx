@@ -114,78 +114,130 @@ export default function DocumentsScreen({ navigation }: any) {
     }
   }, [employeeId, canViewAllDocs]);
 
-  const getUserData = async () => {
-    try {
-      const name = await AsyncStorage.getItem('userName');
-      const token = await AsyncStorage.getItem('userToken');
-      const perms = await AsyncStorage.getItem('userPermissions');
-      
-      let hasViewAll = false;
-      if (perms) {
-          const parsedPerms = JSON.parse(perms);
-          hasViewAll = parsedPerms.some((p: string) => p.toUpperCase() === 'DOCUMENTS:VIEW_ALL' || p.toUpperCase() === 'DOCUMENTS:VIEW-ALL');
-          setCanViewAllDocs(hasViewAll);
-      }
 
-      if (token) {
-          const decoded = safeDecodeJWT(token);
-          let currentEmpId = null;
-          if (decoded && (decoded.id || decoded._id || decoded.userId)) {
-              currentEmpId = decoded.id || decoded._id || decoded.userId;
-              setEmployeeId(currentEmpId);
-          } else {
-              const empId = await AsyncStorage.getItem('employeeId');
-              if (empId) {
-                  currentEmpId = empId;
-                  setEmployeeId(empId);
-              }
-          }
+const getUserData = async () => {
+  try {
+    const name = await AsyncStorage.getItem('userName');
+    const token = await AsyncStorage.getItem('userToken');
+    const perms = await AsyncStorage.getItem('userPermissions');
 
-          if (hasViewAll) {
-              const empRes = await axios.get(`${API_BASE}/employees?limit=500`, { headers: { Authorization: `Bearer ${token}` } });
-              const emps = empRes.data?.data?.data || empRes.data?.data || [];
-              setAllEmployees(emps.filter((e:any) => !e.isDeleted));
-          }
-      }
-      
-      if (name && name !== "User") {
-          const parts = name.trim().split(" ");
-          setUserInitials(parts.length > 1 ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase() : name.substring(0, 2).toUpperCase());
-      }
-    } catch (e) {
-      setUserInitials('US');
+    let hasViewAll = false;
+
+    if (perms) {
+      const parsedPerms = JSON.parse(perms);
+      hasViewAll = Array.isArray(parsedPerms) &&
+        parsedPerms.some(
+          (p: string) =>
+            ['DOCUMENTS:VIEW_ALL', 'DOCUMENTS:VIEW-ALL'].includes(
+              p.toUpperCase()
+            )
+        );
     }
-  };
 
-  const fetchDocuments = async (isSilent = false) => {
-    if (!employeeId) return;
-    try {
-      if (!isSilent && documents.length === 0) setLoading(true);
-      const token = await AsyncStorage.getItem('userToken');
-      
-      let url = `${API_BASE}/documents`;
-      if (!canViewAllDocs) {
-          url += `?employeeId=${employeeId}`;
-      }
+    setCanViewAllDocs(hasViewAll);
 
-      const res = await axios.get(url, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = res.data?.data || res.data || [];
-      const sortedData = (Array.isArray(data) ? data : []).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setDocuments(sortedData);
-    } catch (error) {
-      console.log("Error fetching documents:", error);
-    } finally {
+    let currentEmpId = await AsyncStorage.getItem('employeeId');
+
+    if (!currentEmpId && token) {
+      const decoded = safeDecodeJWT(token);
+
+      // Use only if your backend JWT stores the employee ID here.
+      currentEmpId =
+        decoded?.employeeId || decoded?.employee?._id || null;
+    }
+
+    if (currentEmpId) {
+      setEmployeeId(String(currentEmpId));
+    } else {
+      console.log('Employee ID not found in AsyncStorage/JWT');
       setLoading(false);
-      setRefreshing(false);
     }
-  };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchDocuments(true);
-  };
+    if (hasViewAll && token) {
+      const empRes = await axios.get(
+        `${API_BASE}/employees?limit=500`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const emps = empRes.data?.data?.data || empRes.data?.data || [];
+      setAllEmployees(
+        Array.isArray(emps) ? emps.filter((e: any) => !e.isDeleted) : []
+      );
+    }
+
+    if (name && name !== 'User') {
+      const parts = name.trim().split(' ');
+      setUserInitials(
+        parts.length > 1
+          ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+          : name.substring(0, 2).toUpperCase()
+      );
+    }
+  } catch (error) {
+    console.log('getUserData error:', error);
+    setLoading(false);
+  }
+};
+
+
+ 
+const fetchDocuments = async (isSilent = false) => {
+  if (!employeeId) {
+    if (!isSilent) {
+      setLoading(false);
+    }
+    return;
+  }
+
+  try {
+    if (!isSilent && documents.length === 0) {
+      setLoading(true);
+    }
+
+    const token = await AsyncStorage.getItem('userToken');
+
+    let url = `${API_BASE}/documents`;
+
+    if (!canViewAllDocs) {
+      url += `?employeeId=${employeeId}`;
+    }
+
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = res.data?.data || res.data || [];
+
+    const sortedData = (Array.isArray(data) ? data : []).sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() -
+        new Date(a.createdAt).getTime()
+    );
+
+    setDocuments(sortedData);
+  } catch (error) {
+    console.log('Error fetching documents:', error);
+  } finally {
+    if (!isSilent) {
+      setLoading(false);
+    }
+  }
+};
+
+const onRefresh = async () => {
+  if (refreshing) return;
+
+  setRefreshing(true);
+
+  try {
+    await fetchDocuments(true);
+  } finally {
+    setRefreshing(false);
+  }
+};
+
 const handlePickFile = async () => {
     try {
       const res = await DocumentPicker.pick({
