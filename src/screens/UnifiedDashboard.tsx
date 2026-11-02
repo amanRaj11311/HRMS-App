@@ -15,6 +15,8 @@ import GeoTagAttendanceCamera from '../screens/GeoAttendanceCamera'; // adjust p
 
 const { width } = Dimensions.get("window");
 
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
 const isSuccessfulResponse = (res: any): boolean =>
   !!res &&
   res.status >= 200 &&
@@ -36,6 +38,8 @@ export default function UnifiedDashboard({ navigation }: any) {
   // First-load tracking + latest-request-wins guard (prevents stale overwrites)
   const hasLoadedOnce = useRef(false);
   const fetchSeqRef = useRef(0);
+  // 🚀 FIX: guard so two device syncs never run in parallel (focus + pull-to-refresh)
+  const deviceSyncingRef = useRef(false);
   
   const [isPrivileged, setIsPrivileged] = useState(false); 
   const [loading, setLoading] = useState(true);
@@ -59,7 +63,7 @@ export default function UnifiedDashboard({ navigation }: any) {
   // 🚀 Dynamic Attendance Settings (backend-driven)
   const [attSettings, setAttSettings] = useState<any>(null);
   const [punchLoading, setPunchLoading] = useState(false);
-const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(false);
+  const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(false);
   // 🚀 geo-tagged selfie check-in/out states
   const [showGeoCam, setShowGeoCam] = useState(false);
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -71,136 +75,146 @@ const [selfCheckinAllowed, setSelfCheckinAllowed] = useState<boolean>(false);
   const [pendingLocationName, setPendingLocationName] = useState<string | null>(null);
 
   useFocusEffect(
-  React.useCallback(() => {
-    const today = new Date();
+    React.useCallback(() => {
+      const today = new Date();
 
-    setCurrentDate(
-      today.toLocaleDateString("en-US", {
-        weekday: "long",
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-      })
-    );
-
-    const updateClock = () => {
-      setLiveTime(
-        new Date()
-          .toLocaleTimeString("en-IN", {
-            hour: "numeric",
-            minute: "2-digit",
-            hour12: true,
-          })
-          .toUpperCase()
+      setCurrentDate(
+        today.toLocaleDateString("en-US", {
+          weekday: "long",
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+        })
       );
-    };
 
-    updateClock();
+      const updateClock = () => {
+        setLiveTime(
+          new Date()
+            .toLocaleTimeString("en-IN", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: true,
+            })
+            .toUpperCase()
+        );
+      };
 
-    const timer = setInterval(updateClock, 1000);
+      updateClock();
 
-    // Dashboard focus hone par data load/refresh karo
-    autoSyncAndInit();
+      const timer = setInterval(updateClock, 1000);
 
-    return () => clearInterval(timer);
-  }, [])
-);
+      // Dashboard focus hone par data load/refresh karo
+      autoSyncAndInit();
 
-const autoSyncAndInit = async () => {
-  // Silent after the first completed attempt, so the existing UI stays visible.
-  await initDashboard(hasLoadedOnce.current);
+      return () => clearInterval(timer);
+    }, [])
+  );
 
-  // Device attendance sync
-  try {
-    const token = await AsyncStorage.getItem("userToken");
+  // 🚀 FIX: device (biometric) sync is now a separate, bounded, single-flight background task.
+  // It never blocks the UI / refresh indicator. If it succeeds, fresh punches are pulled silently.
+  const runDeviceSync = async () => {
+    if (deviceSyncingRef.current) return;
+    deviceSyncingRef.current = true;
+    try {
+      const token = await AsyncStorage.getItem("userToken");
+      if (!token) return;
 
-    if (token) {
       const syncRes = await axios
         .get(`${API_BASE}/device/attendance?_t=${Date.now()}`, {
           headers: {
             Authorization: `Bearer ${token}`,
+            'Cache-Control': 'no-cache',
           },
-          timeout: 20000,
+          timeout: 12000,
         })
         .catch(error => {
           console.log("Device attendance sync failed:", error);
           return null;
         });
 
-      // If the sync worked, silently pull the freshly synced punches.
       if (isSuccessfulResponse(syncRes)) {
+        await sleep(1500);
         await initDashboard(true);
       }
+    } catch (error) {
+      console.log("Dashboard sync error:", error);
+    } finally {
+      deviceSyncingRef.current = false;
     }
-  } catch (error) {
-    console.log("Dashboard sync error:", error);
-  }
-};
+  };
+
+  const autoSyncAndInit = async () => {
+    // Silent after the first completed attempt, so the existing UI stays visible.
+    await initDashboard(hasLoadedOnce.current);
+    // Background: don't await, UI is already showing data.
+    runDeviceSync();
+  };
 
  
-const initDashboard = async (isSilent = false) => {
-  try {
-    const [role, name, permsStr, selfCheckinStr] = await Promise.all([
-      AsyncStorage.getItem('userRole'),
-      AsyncStorage.getItem('userName'),
-      AsyncStorage.getItem('userPermissions'),
-      AsyncStorage.getItem('selfCheckinAllowed'),
-    ]);
+  const initDashboard = async (isSilent = false) => {
+    try {
+      const [role, name, permsStr, selfCheckinStr] = await Promise.all([
+        AsyncStorage.getItem('userRole'),
+        AsyncStorage.getItem('userName'),
+        AsyncStorage.getItem('userPermissions'),
+        AsyncStorage.getItem('selfCheckinAllowed'),
+      ]);
 
-    let parsedPerms: string[] = [];
+      let parsedPerms: string[] = [];
 
-    if (permsStr) {
-      parsedPerms = JSON.parse(permsStr).map(
-        (p: string) => p.toUpperCase()
+      if (permsStr) {
+        parsedPerms = JSON.parse(permsStr).map(
+          (p: string) => p.toUpperCase()
+        );
+      }
+
+      const adminPerms = [
+        'EMPLOYEE:CREATE',
+        'EMPLOYEE:UPDATE',
+        'EMPLOYEE:DELETE',
+        'ROLE:CREATE',
+        'ROLE:UPDATE',
+        'PAYROLL:CREATE',
+        'LEAVES:APPROVE',
+        'LEAVES:UPDATE',
+        'ATTENDANCE:UPDATE',
+        'ANALYTICS:VIEW',
+      ];
+
+      const isActuallyAdminOrHR = parsedPerms.some(
+        p => adminPerms.includes(p)
       );
+
+      const roleStr = role ? role.toLowerCase() : '';
+
+      const hasAdminRights =
+        isActuallyAdminOrHR ||
+        roleStr === 'admin' ||
+        roleStr.includes('super') ||
+        roleStr === 'hr';
+
+      setIsPrivileged(hasAdminRights);
+
+      if (isActuallyAdminOrHR && roleStr.includes('employee')) {
+        setUserRoleDisplay('MANAGEMENT');
+      } else if (role) {
+        setUserRoleDisplay(role.toUpperCase());
+      }
+
+      if (name) setUserName(name);
+      setPermissions(parsedPerms);
+      setSelfCheckinAllowed(selfCheckinStr === 'true');
+
+      await fetchData(hasAdminRights, isSilent);
+    } catch (error) {
+      console.log('Dashboard initialization error:', error);
+      // Failed before fetchData ran: make sure we never stay stuck on the loader.
+      hasLoadedOnce.current = true;
+      setLoading(false);
+      setRefreshing(false);
     }
-
-    const adminPerms = [
-      'EMPLOYEE:CREATE',
-      'EMPLOYEE:UPDATE',
-      'EMPLOYEE:DELETE',
-      'ROLE:CREATE',
-      'ROLE:UPDATE',
-      'PAYROLL:CREATE',
-      'LEAVES:APPROVE',
-      'LEAVES:UPDATE',
-      'ATTENDANCE:UPDATE',
-      'ANALYTICS:VIEW',
-    ];
-
-    const isActuallyAdminOrHR = parsedPerms.some(
-      p => adminPerms.includes(p)
-    );
-
-    const roleStr = role ? role.toLowerCase() : '';
-
-    const hasAdminRights =
-      isActuallyAdminOrHR ||
-      roleStr === 'admin' ||
-      roleStr.includes('super') ||
-      roleStr === 'hr';
-
-    setIsPrivileged(hasAdminRights);
-
-    if (isActuallyAdminOrHR && roleStr.includes('employee')) {
-      setUserRoleDisplay('MANAGEMENT');
-    } else if (role) {
-      setUserRoleDisplay(role.toUpperCase());
-    }
-
-    if (name) setUserName(name);
-    setPermissions(parsedPerms);
-    setSelfCheckinAllowed(selfCheckinStr === 'true');
-
-    await fetchData(hasAdminRights, isSilent);
-  } catch (error) {
-    console.log('Dashboard initialization error:', error);
-    // Failed before fetchData ran: make sure we never stay stuck on the loader.
-    hasLoadedOnce.current = true;
-    setLoading(false);
-    setRefreshing(false);
-  }
-};
+  };
 
 
   const getSafeDateString = (d: Date) => {
@@ -217,24 +231,28 @@ const initDashboard = async (isSilent = false) => {
         setLoading(true);
       }
       const token = await AsyncStorage.getItem('userToken');
-      const config = { headers: { Authorization: `Bearer ${token}` }, timeout: 20000 };
+      const config = { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 };
       const ts = Date.now();
       const now = new Date();
       const todayStr = now.toDateString();
 
-      // 🚀 FETCH ATTENDANCE SETTINGS (source of truth for check-in eligibility + geofence)
-      const attSetRes = await axios.get(`${API_BASE}/settings/attendance?_t=${ts}`, config).catch(() => null);
+      // 🚀 FIX: settings + announcements + self attendance now run IN PARALLEL
+      // (before they ran one after another, each with its own timeout).
+      const [attSetRes, annRes, myAttRes] = await Promise.all([
+        axios.get(`${API_BASE}/settings/attendance?_t=${ts}`, config).catch(() => null),
+        axios.get(`${API_BASE}/announcements?limit=50&_t=${ts}`, config).catch(error => {
+          console.log('Announcements API failed:', error);
+          return null;
+        }),
+        axios.get(`${API_BASE}/attendance/self?limit=500&_t=${ts}`, config).catch(() => null),
+      ]);
+
+      // ── ATTENDANCE SETTINGS (source of truth for check-in eligibility + geofence) ──
       if (isLatest() && isSuccessfulResponse(attSetRes) && attSetRes?.data?.data) {
         setAttSettings(attSetRes.data.data);
       }
 
       // ── ANNOUNCEMENTS: update only on a validated successful response ──
-      const annRes = await axios
-        .get(`${API_BASE}/announcements?limit=50&_t=${Date.now()}`, config)
-        .catch(error => {
-          console.log('Announcements API failed:', error);
-          return null;
-        });
       const rawAnn = extractList(annRes);
 
       if (rawAnn && isLatest()) {
@@ -262,7 +280,6 @@ const initDashboard = async (isSilent = false) => {
       }
 
       // ── SELF ATTENDANCE: no [] fallback; update only on success + valid array ──
-      const myAttRes = await axios.get(`${API_BASE}/attendance/self?limit=500&_t=${ts}`, config).catch(() => null);
       const myAttData = extractList(myAttRes);
 
       if (myAttData && isLatest()) {
@@ -439,7 +456,7 @@ const initDashboard = async (isSilent = false) => {
                   try {
                       setLoading(true);
                       const token = await AsyncStorage.getItem('userToken');
-                      await axios.put(`${API_BASE}/leaves/${leaveId}`, { status: newStatus }, { headers: { Authorization: `Bearer ${token}` } });
+                      await axios.put(`${API_BASE}/leaves/${leaveId}`, { status: newStatus }, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
                       initDashboard(true); 
                   } catch (e: any) {
                       Alert.alert("Error", e.response?.data?.message || "Failed to update leave.");
@@ -477,10 +494,11 @@ const initDashboard = async (isSilent = false) => {
   };
 
   const hasSelfCheckinPermission = permissions.some(p => p.includes('ATTENDANCE:SELF'));
-const canSelfCheckin =
-  hasSelfCheckinPermission &&
-  selfCheckinAllowed === true &&
-  attSettings?.checkinEnabled === true;
+  const canSelfCheckin =
+    hasSelfCheckinPermission &&
+    selfCheckinAllowed === true &&
+    attSettings?.checkinEnabled === true;
+
   const handlePunch = async () => {
     if (!hasSelfCheckinPermission) {
       return Alert.alert(
@@ -569,71 +587,72 @@ const canSelfCheckin =
     );
   };
 
-const handlePhotoCaptured = async (fileUri: string) => {
-  setShowGeoCam(false);
-  if (!pendingLocation) return; // safety guard
+  const handlePhotoCaptured = async (fileUri: string) => {
+    setShowGeoCam(false);
+    if (!pendingLocation) return; // safety guard
 
-  setPunchLoading(true);
-  try {
-      const token = await AsyncStorage.getItem('userToken');
-      const myEmpId = await AsyncStorage.getItem('employeeId');
+    setPunchLoading(true);
+    try {
+        const token = await AsyncStorage.getItem('userToken');
+        const myEmpId = await AsyncStorage.getItem('employeeId');
 
-      // ── Upload photo ──
-      const form = new FormData();
-      form.append('file', {
-          uri: fileUri,
-          name: `attendance_${Date.now()}.jpg`,
-          type: 'image/jpeg',
-      } as any);
+        // ── Upload photo ──
+        const form = new FormData();
+        form.append('file', {
+            uri: fileUri,
+            name: `attendance_${Date.now()}.jpg`,
+            type: 'image/jpeg',
+        } as any);
 
-      const uploadRes = await axios.post(`${API_BASE}/upload`, form, {
-          headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'multipart/form-data',
-          },
-      });
+        const uploadRes = await axios.post(`${API_BASE}/upload`, form, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'multipart/form-data',
+            },
+            timeout: 30000,
+        });
 
-      const rawPath =
-          uploadRes.data?.fileUrl ||
-          uploadRes.data?.url ||
-          uploadRes.data?.data?.fileUrl ||
-          uploadRes.data?.data?.url;
+        const rawPath =
+            uploadRes.data?.fileUrl ||
+            uploadRes.data?.url ||
+            uploadRes.data?.data?.fileUrl ||
+            uploadRes.data?.data?.url;
 
-      if (!rawPath) throw new Error('Upload did not return a file URL.');
+        if (!rawPath) throw new Error('Upload did not return a file URL.');
 
-      const apiOrigin = API_BASE.replace(/\/api\/?$/, '');
-      const photoProof = /^https?:\/\//i.test(rawPath)
-          ? rawPath
-          : `${apiOrigin}${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
+        const apiOrigin = API_BASE.replace(/\/api\/?$/, '');
+        const photoProof = /^https?:\/\//i.test(rawPath)
+            ? rawPath
+            : `${apiOrigin}${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
 
-      // ── Check-in / checkout ──
-      const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
-      const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
+        // ── Check-in / checkout ──
+        const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
+        const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
 
-      await axios.post(
-          `${API_BASE}${endpoint}`,
-          {
-              employeeId: myEmpId,
-              method: 'mobile',
-              location: pendingLocation,
-              photoProof,
-          },
-          { headers: { Authorization: `Bearer ${token}` } }
-      );
+        await axios.post(
+            `${API_BASE}${endpoint}`,
+            {
+                employeeId: myEmpId,
+                method: 'mobile',
+                location: pendingLocation,
+                photoProof,
+            },
+            { headers: { Authorization: `Bearer ${token}` }, timeout: 20000 }
+        );
 
-      Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
-      await fetchData(isPrivileged, true);
-  } catch (e: any) {
-      Alert.alert("Error", e.response?.data?.message || e.message || "Failed to mark attendance.");
-  } finally {
-      setPunchLoading(false);
-      setPendingLocation(null);
-      setPendingAddress('');
-      setPendingAccuracy(null);
-      setPendingDistance(null);
-      setPendingLocationName(null);
-  }
-};
+        Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
+        await fetchData(isPrivileged, true);
+    } catch (e: any) {
+        Alert.alert("Error", e.response?.data?.message || e.message || "Failed to mark attendance.");
+    } finally {
+        setPunchLoading(false);
+        setPendingLocation(null);
+        setPendingAddress('');
+        setPendingAccuracy(null);
+        setPendingDistance(null);
+        setPendingLocationName(null);
+    }
+  };
 
   const hasPerm = (resourceKey: string) => {
       if (!resourceKey) return true;
@@ -706,32 +725,17 @@ const handlePhotoCaptured = async (fileUri: string) => {
       </View>
   );
 
+  // 🚀 FIX: pull-to-refresh loads fresh data first and stops the indicator right away.
+  // The slow biometric device sync now runs in the background (single-flight, 12s timeout),
+  // and silently refreshes the data again only if it succeeds.
   const syncBiometricAndRefresh = async () => {
     setRefreshing(true);
     try {
-        const token = await AsyncStorage.getItem('userToken');
-        const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
-        
-        await axios.get(syncUrl, { 
-            headers: { 
-                Authorization: `Bearer ${token}`,
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
-                'Expires': '0'
-            },
-            timeout: 20000,
-        }).catch(() => {});
-
-    } catch (error) {
-       console.log('Error during biometric sync refresh', error);
-    }
-
-    try {
-        await new Promise(resolve => setTimeout(resolve, 3000));
         await initDashboard(true); // silent: no full-screen loader, UI stays visible
     } finally {
         setRefreshing(false); // always reset, even if something throws
     }
+    runDeviceSync();
   };
 
   return (
@@ -892,70 +896,70 @@ const handlePhotoCaptured = async (fileUri: string) => {
                                <MaterialCommunityIcons name="chevron-right" size={18} color={colors.primary} />
                            </TouchableOpacity>
                        )}
-{canSelfCheckin ? (
-  <TouchableOpacity 
-    style={[
-      styles.punchBtn,
-      todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
-        ? styles.punchBtnOut
-        : styles.punchBtnIn
-    ]} 
-    onPress={handlePunch}
-    disabled={punchLoading || checkingLocation}
-    activeOpacity={0.85}
-  >
-    {(punchLoading || checkingLocation) ? (
-      <ActivityIndicator color="#fff" />
-    ) : (
-      <>
-        <MaterialCommunityIcons
-          name={
-            todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
-              ? "logout"
-              : "login"
-          }
-          size={22}
-          color="#fff"
-        />
-        <Text style={styles.punchBtnText}>
-          {todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
-            ? "Check Out"
-            : "Check In"}
-        </Text>
-      </>
-    )}
-  </TouchableOpacity>
-) : (
-  <View
-    style={{
-      flexDirection: 'row',
-      backgroundColor: isLightMode
-        ? '#EEF2FF'
-        : 'rgba(99, 102, 241, 0.12)',
-      padding: 14,
-      borderRadius: 14,
-      alignItems: 'center',
-    }}
-  >
-    <MaterialCommunityIcons
-      name="information"
-      size={20}
-      color="#6366F1"
-      style={{ marginRight: 10 }}
-    />
+                       {canSelfCheckin ? (
+                          <TouchableOpacity 
+                            style={[
+                              styles.punchBtn,
+                              todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+                                ? styles.punchBtnOut
+                                : styles.punchBtnIn
+                            ]} 
+                            onPress={handlePunch}
+                            disabled={punchLoading || checkingLocation}
+                            activeOpacity={0.85}
+                          >
+                            {(punchLoading || checkingLocation) ? (
+                              <ActivityIndicator color="#fff" />
+                            ) : (
+                              <>
+                                <MaterialCommunityIcons
+                                  name={
+                                    todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+                                      ? "logout"
+                                      : "login"
+                                  }
+                                  size={22}
+                                  color="#fff"
+                                />
+                                <Text style={styles.punchBtnText}>
+                                  {todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time
+                                    ? "Check Out"
+                                    : "Check In"}
+                                </Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        ) : (
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              backgroundColor: isLightMode
+                                ? '#EEF2FF'
+                                : 'rgba(99, 102, 241, 0.12)',
+                              padding: 14,
+                              borderRadius: 14,
+                              alignItems: 'center',
+                            }}
+                          >
+                            <MaterialCommunityIcons
+                              name="information"
+                              size={20}
+                              color="#6366F1"
+                              style={{ marginRight: 10 }}
+                            />
 
-    <Text
-      style={{
-        color: '#6366F1',
-        fontSize: 13,
-        flex: 1,
-        fontWeight: '600',
-      }}
-    >
-      Self check-in/out is not enabled. Please contact HR/Admin.
-    </Text>
-  </View>
-)}
+                            <Text
+                              style={{
+                                color: '#6366F1',
+                                fontSize: 13,
+                                flex: 1,
+                                fontWeight: '600',
+                              }}
+                            >
+                              Self check-in/out is not enabled. Please contact HR/Admin.
+                            </Text>
+                          </View>
+                        )}
                        {checkingLocation && (
                            <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10}}>
                                <MaterialCommunityIcons name="crosshairs-gps" size={13} color={colors.textSub} style={{marginRight: 5}} />

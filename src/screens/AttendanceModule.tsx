@@ -23,6 +23,33 @@ import { API_BASE } from '../api/api';
 const STATUS_OPTIONS = ['present', 'absent', 'late', 'half-day', 'work-from-home', 'holiday', 'missed', 'overtime'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+// 🚀 FIX: har request ka timeout. Pehle koi timeout nahi tha -> server/device slow ho to spinner hamesha ghumta tha.
+const REQ_TIMEOUT = 12000;
+const SYNC_TIMEOUT = 12000;
+
+const authCfg = (token: string | null, timeout: number = REQ_TIMEOUT) => ({
+    headers: { Authorization: `Bearer ${token}` },
+    timeout,
+});
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+// 🚀 FIX: network flaky ho to 1 baar automatic retry (pehle error `catch(() => null)` me chhup jata tha)
+const getWithRetry = async (url: string, token: string | null, retries = 1) => {
+    let lastErr: any;
+    for (let i = 0; i <= retries; i++) {
+        try {
+            return await axios.get(url, authCfg(token));
+        } catch (e) {
+            lastErr = e;
+            if (i < retries) await sleep(600);
+        }
+    }
+    throw lastErr;
+};
+
+const pad2 = (n: number) => (n < 10 ? '0' + n : String(n));
+const ymd = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 const screenCache: {
     hasData: boolean;
@@ -50,6 +77,41 @@ const screenCache: {
 
 const dateKeyOf = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
+// 🚀 Status / working-hours override logic ko ek jagah nikal diya.
+// Ab list wale cards AUR floating "Today's Attendance" card dono same logic use karte hain,
+// isliye dono me check-in / check-out / hours / status hamesha same dikhenge.
+const normalizeRecord = (item: any) => {
+    const updated = { ...item };
+    const currentStatus = String(item.status).toLowerCase();
+
+    if (['absent', 'holiday', 'week-off'].includes(currentStatus)) return updated;
+
+    if (updated.checkIn && updated.checkIn.time) {
+        const checkInMs = new Date(updated.checkIn.time).getTime();
+        const isLate = currentStatus === 'late';
+
+        if (!updated.checkOut || !updated.checkOut.time) {
+            updated.workingHours = 0;
+            updated.status = isLate ? 'late' : 'present';
+        } else {
+            const checkOutMs = new Date(updated.checkOut.time).getTime();
+            const diffMs = checkOutMs - checkInMs;
+            const diffMinutes = diffMs / (1000 * 60);
+
+            if (diffMinutes <= 1) {
+                updated.checkOut = null;
+                updated.workingHours = 0;
+                updated.status = isLate ? 'late' : 'present';
+            } else {
+                const workingHours = diffMs / (1000 * 60 * 60);
+                updated.workingHours = workingHours;
+                updated.status = workingHours < 6 ? 'half-day' : (isLate ? 'late' : 'present');
+            }
+        }
+    }
+    return updated;
+};
+
 export default function AttendanceModule({ navigation }: any) {
     const { colors, isLightMode } = useTheme();
 
@@ -58,6 +120,7 @@ export default function AttendanceModule({ navigation }: any) {
     const [permissions, setPermissions] = useState<string[]>(cacheValid ? screenCache.permissions : []);
     const [loading, setLoading] = useState(!cacheValid);
     const [refreshing, setRefreshing] = useState(false);
+    const [loadError, setLoadError] = useState('');
 
     const [records, setRecords] = useState<any[]>(cacheValid ? screenCache.records : []);
     const [checkoutRequests, setCheckoutRequests] = useState<any[]>(cacheValid ? screenCache.checkoutRequests : []);
@@ -68,9 +131,15 @@ export default function AttendanceModule({ navigation }: any) {
 
     const [isSyncing, setIsSyncing] = useState(false);
 
+    // 🚀 NEW: Date-wise aur Month-wise filter alag-alag
+    const [filterMode, setFilterMode] = useState<'date' | 'month'>('date');
     const [filterDate, setFilterDate] = useState<Date>(new Date());
-    const [isDateFiltered, setIsDateFiltered] = useState(false);
+    const [filterMonth, setFilterMonth] = useState<number>(new Date().getMonth());
+    const [filterYear, setFilterYear] = useState<number>(new Date().getFullYear());
     const [showFilterDatePicker, setShowFilterDatePicker] = useState(false);
+    const [showMonthPicker, setShowMonthPicker] = useState(false);
+    const [pickerYear, setPickerYear] = useState<number>(new Date().getFullYear());
+
     const [filterStatus, setFilterStatus] = useState('All Status');
     const [showStatusModal, setShowStatusModal] = useState(false);
     const [filterEmpId, setFilterEmpId] = useState('All');
@@ -122,8 +191,21 @@ export default function AttendanceModule({ navigation }: any) {
     const [pendingDistance, setPendingDistance] = useState<number | null>(null);
     const [pendingLocationName, setPendingLocationName] = useState<string | null>(null);
     const [todayRecord, setTodayRecord] = useState<any>(cacheValid ? screenCache.todayRecord : null);
+    const [todayLoading, setTodayLoading] = useState(false);
     const [showAttendanceCardModal, setShowAttendanceCardModal] = useState(false);
     const initDoneRef = useRef<boolean>(cacheValid);
+
+    // 🚀 FIX (stale closure): useFocusEffect(useCallback(..., [])) pehli render ke purane state
+    // (filterDate, permissions) pakad leta tha. Ab latest values refs se padhte hain.
+    const filterRef = useRef({ filterMode, filterDate, filterMonth, filterYear });
+    filterRef.current = { filterMode, filterDate, filterMonth, filterYear };
+    const permsRef = useRef<string[]>(permissions);
+    permsRef.current = permissions;
+
+    // 🚀 FIX (race condition): sirf sabse latest request ka result screen par lagega
+    const reqIdRef = useRef(0);
+    const syncingRef = useRef(false);
+    const firstFilterRun = useRef(true);
 
     const getInitialTime = (hours: number, minutes = 0) => {
         const d = new Date();
@@ -183,18 +265,16 @@ export default function AttendanceModule({ navigation }: any) {
 
     const canDo = (action: string) => permissions.includes(`ATTENDANCE:${action.toUpperCase()}`);
 
-    // 🚀 FIX: har focus par initScreen chalta hai, lekin ab silent mode me (spinner nahi dikhega
-    // agar pehle se data hai)
     useFocusEffect(useCallback(() => {
         initScreen();
     }, []));
 
-    // 🚀 FIX: yeh effect ab sirf tab chalega jab user filter date badle (initial setup ke baad).
-    // Pehle yeh permissions set hote hi chal jata tha -> double fetch + flicker.
+    // Filter (mode / date / month / year) badalne par hi dobara fetch. Pehli baar skip (initScreen kar raha hai).
     useEffect(() => {
+        if (firstFilterRun.current) { firstFilterRun.current = false; return; }
         if (!initDoneRef.current) return;
-        fetchData(false); // date badalne par list badalti hai, isliye loader dikhana theek hai
-    }, [filterDate, isDateFiltered]);
+        fetchData(false);
+    }, [filterMode, filterDate, filterMonth, filterYear]);
 
     useEffect(() => {
         if (isAddModalVisible && canDo('CREATE') && allEmployees.length > 0) {
@@ -205,9 +285,7 @@ export default function AttendanceModule({ navigation }: any) {
     const fetchFormAbsentees = async (d: Date) => {
         try {
             const token = await AsyncStorage.getItem('userToken');
-            const pad = (n: number) => n < 10 ? '0' + n : n;
-            const dStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-            const res = await axios.get(`${API_BASE}/attendance?date=${dStr}`, { headers: { Authorization: `Bearer ${token}` } });
+            const res = await axios.get(`${API_BASE}/attendance?date=${ymd(d)}`, authCfg(token));
             const punchedIds = (res.data?.data || []).map((r: any) => r.employeeId?._id || r.employeeId);
             const absentees = allEmployees.filter(emp => !punchedIds.includes(emp._id));
             setFormAbsentEmployees(absentees);
@@ -217,86 +295,109 @@ export default function AttendanceModule({ navigation }: any) {
     };
 
     const initScreen = async () => {
-        // 🚀 FIX: agar pehle se data hai (cache ya earlier load), to loader mat dikhao — silent refresh karo
         const silent = initDoneRef.current || screenCache.hasData;
         if (!silent) setLoading(true);
 
-        const permsStr = await AsyncStorage.getItem('userPermissions');
-        const userNameStr = await AsyncStorage.getItem('userName');
+        try {
+            const permsStr = await AsyncStorage.getItem('userPermissions');
+            const userNameStr = await AsyncStorage.getItem('userName');
 
-        const pArray = permsStr ? JSON.parse(permsStr).map((p: string) => p.toUpperCase()) : [];
+            const pArray = permsStr ? JSON.parse(permsStr).map((p: string) => p.toUpperCase()) : [];
 
-        setPermissions(pArray);
-        screenCache.permissions = pArray;
-        if (userNameStr) {
-            setMyName(userNameStr);
-            screenCache.myName = userNameStr;
+            setPermissions(pArray);
+            permsRef.current = pArray;
+            screenCache.permissions = pArray;
+            if (userNameStr) {
+                setMyName(userNameStr);
+                screenCache.myName = userNameStr;
+            }
+
+            const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
+            const selfAllowed = selfCheckinStr !== 'false';
+            setSelfCheckinAllowed(selfAllowed);
+            screenCache.selfCheckinAllowed = selfAllowed;
+
+            if (pArray.includes('ATTENDANCE:VIEW')) {
+                fetchEmployees();
+            }
+
+            if (pArray.some((p: string) => p.includes('ATTENDANCE:SELF'))) {
+                fetchTodayRecord();
+            }
+
+            await fetchData(silent, pArray);
+        } catch (e) {
+            console.log('Init Error:', e);
+            setLoading(false);
+        } finally {
+            initDoneRef.current = true;
         }
-
-        // 🚀 Individual self check-in/out permission (default true unless explicitly stored as 'false')
-        const selfCheckinStr = await AsyncStorage.getItem('selfCheckinAllowed');
-        const selfAllowed = selfCheckinStr !== 'false';
-        setSelfCheckinAllowed(selfAllowed);
-        screenCache.selfCheckinAllowed = selfAllowed;
-
-        if (pArray.includes('ATTENDANCE:VIEW')) {
-            fetchEmployees();
-        }
-
-        if (pArray.some((p: string) => p.includes('ATTENDANCE:SELF'))) {
-            fetchTodayRecord();
-        }
-
-        await fetchData(silent, pArray);
-        initDoneRef.current = true;
     };
 
     const fetchEmployees = async () => {
         try {
             const token = await AsyncStorage.getItem('userToken');
-            const res = await axios.get(`${API_BASE}/employees?limit=500`, { headers: { Authorization: `Bearer ${token}` } });
+            const res = await getWithRetry(`${API_BASE}/employees?limit=500`, token);
             const list = (res.data?.data?.data || res.data?.data || []).filter((e: any) => !e.isDeleted);
             setAllEmployees(list);
             screenCache.allEmployees = list;
         } catch (e) { }
     };
 
+    // 🚀 FIX: pehle poore 500 self-records laata tha aur error par todayRecord = null kar deta tha
+    // (jisse button galti se "Check In" dikhne lagta tha). Ab sirf current month laata hai
+    // aur error par purani value rehne deta hai. Same normalizeRecord logic use hota hai.
     const fetchTodayRecord = async () => {
         try {
             const token = await AsyncStorage.getItem('userToken');
-            const res = await axios.get(`${API_BASE}/attendance/self?limit=500&_t=${Date.now()}`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const now = new Date();
+            const res = await getWithRetry(
+                `${API_BASE}/attendance/self?month=${now.getMonth() + 1}&year=${now.getFullYear()}&limit=100&_t=${Date.now()}`,
+                token
+            );
             const data = res?.data?.data || [];
-            const todayStr = new Date().toDateString();
-            const rec = data.find((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
-            setTodayRecord(rec || null);
-            screenCache.todayRecord = rec || null;
+            const todayStr = now.toDateString();
+            const matches = data.filter((r: any) => new Date(r.date || r.checkIn?.time).toDateString() === todayStr);
+            const rec = matches.find((r: any) => r.checkIn?.time) || matches[0];
+            const norm = rec ? normalizeRecord(rec) : null;
+            setTodayRecord(norm);
+            screenCache.todayRecord = norm;
         } catch (e) {
-            setTodayRecord(null);
-            screenCache.todayRecord = null;
+            // network error: purana todayRecord waisa hi rehne do
         }
     };
 
-    const fetchData = async (isSilent = false, pArray?: string[]) => {
+    const fetchData = async (isSilent = false, pArray?: string[]): Promise<boolean> => {
+        const myId = ++reqIdRef.current;
         try {
             if (!isSilent) setLoading(true);
+            setLoadError('');
             const token = await AsyncStorage.getItem('userToken');
-            const currentPerms = pArray || permissions;
+            const currentPerms = pArray || permsRef.current;
             const canViewAll = currentPerms.includes('ATTENDANCE:VIEW');
 
-            let url = `${API_BASE}/attendance`;
-            let reqUrl = `${API_BASE}/checkout-requests`;
+            const { filterMode: mode, filterDate: fDate, filterMonth: fMonth, filterYear: fYear } = filterRef.current;
 
-            const m = filterDate.getMonth() + 1;
-            const y = filterDate.getFullYear();
+            let url = '';
+            let reqUrl = '';
 
             if (canViewAll) {
-                const pad = (n: number) => n < 10 ? '0' + n : n;
-                const dateStr = `${y}-${pad(m)}-${pad(filterDate.getDate())}`;
-                url += `?date=${dateStr}&limit=500`;
-                reqUrl += `?date=${dateStr}&limit=500`;
+                if (mode === 'date') {
+                    // 🚀 Date-wise: sirf wahi ek din
+                    const ds = ymd(fDate);
+                    url = `${API_BASE}/attendance?date=${ds}&limit=500`;
+                    reqUrl = `${API_BASE}/checkout-requests?date=${ds}&limit=500`;
+                } else {
+                    // 🚀 Month-wise: 1 tarikh se month ke last din tak
+                    const lastDay = new Date(fYear, fMonth + 1, 0).getDate();
+                    const start = `${fYear}-${pad2(fMonth + 1)}-01`;
+                    const end = `${fYear}-${pad2(fMonth + 1)}-${pad2(lastDay)}`;
+                    url = `${API_BASE}/attendance?startDate=${start}&endDate=${end}&limit=1000`;
+                    reqUrl = `${API_BASE}/checkout-requests?startDate=${start}&endDate=${end}&limit=1000`;
+                }
             } else {
+                const m = mode === 'date' ? fDate.getMonth() + 1 : fMonth + 1;
+                const y = mode === 'date' ? fDate.getFullYear() : fYear;
                 url = `${API_BASE}/attendance/self?month=${m}&year=${y}&limit=100`;
                 reqUrl = `${API_BASE}/checkout-requests/self?limit=500`;
             }
@@ -305,28 +406,38 @@ export default function AttendanceModule({ navigation }: any) {
             reqUrl += `${reqUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
 
             const [res, reqRes, attSetRes] = await Promise.all([
-                axios.get(url, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
-                axios.get(reqUrl, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
-                axios.get(`${API_BASE}/settings/attendance?_t=${Date.now()}`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null)
+                getWithRetry(url, token, 1).catch(() => null),
+                getWithRetry(reqUrl, token, 0).catch(() => null),
+                getWithRetry(`${API_BASE}/settings/attendance?_t=${Date.now()}`, token, 0).catch(() => null)
             ]);
+
+            // Koi nayi request chal padi hai -> yeh purana result ignore
+            if (myId !== reqIdRef.current) return false;
 
             if (attSetRes?.data?.data) {
                 setAttSettings(attSetRes.data.data);
                 screenCache.attSettings = attSetRes.data.data;
             }
 
-            // 🚀 FIX: agar main attendance request fail ho gayi (network error), to purana data
-            // mat mitao — wahi dikhne do jo pehle se screen par hai.
+            // Main attendance request fail -> purana data mat mitao, error + Retry dikhao
             if (!res) {
-                return;
+                setLoadError('Data load nahi ho paya. Internet check karke Retry karein.');
+                return false;
             }
 
-            const data = res?.data?.data || [];
+            let data = res?.data?.data || [];
             const requestsData = reqRes?.data?.data || [];
 
             requestsData.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
             setCheckoutRequests(requestsData);
+
+            // Self user + Date mode: backend month bhejta hai, to yahan sirf us din ka rakho
+            if (!canViewAll && mode === 'date') {
+                data = data.filter((item: any) => {
+                    const d = new Date(item.date || item.checkIn?.time);
+                    return !isNaN(d.getTime()) && dateKeyOf(d) === dateKeyOf(fDate);
+                });
+            }
 
             const uniqueRecordsMap = new Map();
 
@@ -347,110 +458,95 @@ export default function AttendanceModule({ navigation }: any) {
                 }
             });
 
-            // Status Override Logic
             const finalData = Array.from(uniqueRecordsMap.values()).map((item: any) => {
-                let updated = { ...item };
-
+                const updated: any = normalizeRecord(item);
                 const relatedReq = requestsData.find((r: any) => {
                     const reqAttId = r.attendanceId?._id || r.attendanceId;
                     return String(reqAttId) === String(updated._id);
                 });
                 updated._relatedReq = relatedReq;
-
-                const currentStatus = String(item.status).toLowerCase();
-
-                if (!['absent', 'holiday', 'week-off'].includes(currentStatus)) {
-                    if (updated.checkIn && updated.checkIn.time) {
-                        const checkInDate = new Date(updated.checkIn.time);
-                        const checkInMs = checkInDate.getTime();
-                        const isLate = currentStatus === 'late';
-
-                        if (!updated.checkOut || !updated.checkOut.time) {
-                            updated.workingHours = 0;
-                            updated.status = isLate ? 'late' : 'present';
-                        }
-                        else {
-                            const checkOutDate = new Date(updated.checkOut.time);
-                            const checkOutMs = checkOutDate.getTime();
-                            const diffMs = checkOutMs - checkInMs;
-                            const diffMinutes = diffMs / (1000 * 60);
-
-                            if (diffMinutes <= 1) {
-                                updated.checkOut = null;
-                                updated.workingHours = 0;
-                                updated.status = isLate ? 'late' : 'present';
-                            }
-                            else {
-                                const workingHours = diffMs / (1000 * 60 * 60);
-                                updated.workingHours = workingHours;
-
-                                if (workingHours < 6) {
-                                    updated.status = 'half-day';
-                                } else {
-                                    updated.status = isLate ? 'late' : 'present';
-                                }
-                            }
-                        }
-                    }
-                }
-
                 return updated;
             });
 
+            // Naya din upar
+            finalData.sort((a: any, b: any) =>
+                new Date(b.date || b.checkIn?.time).getTime() - new Date(a.date || a.checkIn?.time).getTime()
+            );
+
             setRecords(finalData);
 
-            // 🚀 FIX: cache update — sirf tab jab aaj ki date dekh rahe hain
-            if (dateKeyOf(filterDate) === dateKeyOf(new Date())) {
+            if (mode === 'date' && dateKeyOf(fDate) === dateKeyOf(new Date())) {
                 screenCache.records = finalData;
                 screenCache.checkoutRequests = requestsData;
                 screenCache.dateKey = dateKeyOf(new Date());
                 screenCache.hasData = true;
             }
-
+            return true;
         } catch (e) {
             console.log("Fetch Error:", e);
+            if (myId === reqIdRef.current) setLoadError('Kuch galat ho gaya. Retry karein.');
+            return false;
         } finally {
-            setLoading(false); setRefreshing(false);
-        }
-    };
-
-    const syncBiometric = async (silent = false) => {
-        if (!silent) setIsSyncing(true);
-        try {
-            const token = await AsyncStorage.getItem('userToken');
-            const syncUrl = `${API_BASE}/device/attendance?_t=${Date.now()}`;
-
-            await axios.get(syncUrl, {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Cache-Control': 'no-cache'
-                }
-            }).catch(() => { });
-
-            return new Promise((resolve) => {
-                setTimeout(async () => {
-                    await fetchData(true);
-                    await fetchTodayRecord();
-                    if (!silent) {
-                        Alert.alert("Success", "Attendance synchronized successfully!");
-                        setIsSyncing(false);
-                    }
-                    resolve(true);
-                }, 3000);
-            });
-
-        } catch (error: any) {
-            if (!silent) {
-                Alert.alert("Sync Error", "Failed to communicate with server.");
-                setIsSyncing(false);
+            // Sirf latest request hi loader band kare
+            if (myId === reqIdRef.current) {
+                setLoading(false);
+                setRefreshing(false);
             }
         }
     };
 
+    // 🚀 FIX: Fingerprint (biometric) sync.
+    // Pehle: device endpoint ka wait (bina timeout) + 3s fixed delay + uske baad hi data fetch.
+    // Ab: (1) pehle turant DB ka data dikhao, (2) device sync timeout ke saath, (3) sync hua to dobara refresh.
+    // try/finally se isSyncing HAMESHA false hota hai -> spinner kabhi atakta nahi.
+    const syncBiometric = async (showAlert = true) => {
+        if (syncingRef.current) return;
+        syncingRef.current = true;
+        setIsSyncing(true);
+        try {
+            const token = await AsyncStorage.getItem('userToken');
+
+            await fetchData(true);
+
+            let synced = false;
+            try {
+                await axios.get(`${API_BASE}/device/attendance?_t=${Date.now()}`, {
+                    headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' },
+                    timeout: SYNC_TIMEOUT,
+                });
+                synced = true;
+            } catch (e) { /* device slow/offline - ignore, list pehle hi dikh chuki hai */ }
+
+            let ok = true;
+            if (synced) {
+                await sleep(1500);
+                ok = await fetchData(true);
+            }
+            await fetchTodayRecord();
+
+            if (showAlert) {
+                if (synced && ok) Alert.alert("Success", "Attendance synchronized successfully!");
+                else if (!synced) Alert.alert("Sync Pending", "Biometric device se sync nahi ho paya (timeout). Latest saved data dikha diya gaya hai.");
+                else Alert.alert("Sync Error", "Failed to communicate with server.");
+            }
+        } catch (error: any) {
+            if (showAlert) Alert.alert("Sync Error", "Failed to communicate with server.");
+        } finally {
+            syncingRef.current = false;
+            setIsSyncing(false);
+        }
+    };
+
+    // 🚀 FIX: Pull-to-refresh ab device sync ka wait nahi karta. Pehle data aata hai, indicator band hota hai,
+    // device sync background me chalta rehta hai.
     const handleRefresh = async () => {
         setRefreshing(true);
-        await syncBiometric(true);
-        setRefreshing(false);
+        try {
+            await Promise.all([fetchData(true), fetchTodayRecord()]);
+        } finally {
+            setRefreshing(false);
+        }
+        syncBiometric(false);
     };
 
     const escapeXml = (unsafe: string) => {
@@ -491,14 +587,11 @@ export default function AttendanceModule({ navigation }: any) {
 
             for (let i = 0; i < targetEmployees.length; i += chunkSize) {
                 const chunk = targetEmployees.slice(i, i + chunkSize);
-                const pad = (n: number) => n < 10 ? '0' + n : n;
-                const startDateStr = `${sDate.getFullYear()}-${pad(sDate.getMonth() + 1)}-${pad(sDate.getDate())}`;
-                const endDateStr = `${eDate.getFullYear()}-${pad(eDate.getMonth() + 1)}-${pad(eDate.getDate())}`;
+                const startDateStr = ymd(sDate);
+                const endDateStr = ymd(eDate);
 
                 const promises = chunk.map(emp =>
-                    axios.get(`${API_BASE}/attendance?employeeId=${emp._id}&startDate=${startDateStr}&endDate=${endDateStr}&limit=500`, {
-                        headers: { Authorization: `Bearer ${token}` }
-                    }).catch(() => null)
+                    axios.get(`${API_BASE}/attendance?employeeId=${emp._id}&startDate=${startDateStr}&endDate=${endDateStr}&limit=500`, authCfg(token, 20000)).catch(() => null)
                 );
 
                 const results = await Promise.all(promises);
@@ -553,7 +646,7 @@ export default function AttendanceModule({ navigation }: any) {
                     }
                     excelContent += `</Table>\n</Worksheet>\n`;
                 });
-                await new Promise(resolve => setTimeout(resolve, 300));
+                await sleep(300);
             }
             excelContent += `</Workbook>`;
 
@@ -600,13 +693,11 @@ export default function AttendanceModule({ navigation }: any) {
         try {
             setFormLoading(true);
             const token = await AsyncStorage.getItem('userToken');
-            const config = { headers: { Authorization: `Bearer ${token}` } };
+            const config = authCfg(token, 20000);
 
-            const pad = (n: number) => n < 10 ? '0' + n : n;
-            const cIn = `${pad(formData.checkIn.getHours())}:${pad(formData.checkIn.getMinutes())}`;
-            const cOut = `${pad(formData.checkOut.getHours())}:${pad(formData.checkOut.getMinutes())}`;
-            const d = formData.date;
-            const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            const cIn = `${pad2(formData.checkIn.getHours())}:${pad2(formData.checkIn.getMinutes())}`;
+            const cOut = `${pad2(formData.checkOut.getHours())}:${pad2(formData.checkOut.getMinutes())}`;
+            const dateStr = ymd(formData.date);
 
             const payload = {
                 employeeId: formData.employeeId,
@@ -641,8 +732,7 @@ export default function AttendanceModule({ navigation }: any) {
             setSubmitRequestLoading(true);
             const token = await AsyncStorage.getItem('userToken');
 
-            const pad = (n: number) => n < 10 ? '0' + n : n;
-            const timeStr = `${pad(requestForm.time.getHours())}:${pad(requestForm.time.getMinutes())}`;
+            const timeStr = `${pad2(requestForm.time.getHours())}:${pad2(requestForm.time.getMinutes())}`;
 
             let recordDateStr = '';
             if (selectedAttendance?.date) {
@@ -650,7 +740,7 @@ export default function AttendanceModule({ navigation }: any) {
             } else if (selectedAttendance?.checkIn?.time) {
                 recordDateStr = selectedAttendance.checkIn.time.split('T')[0];
             } else {
-                recordDateStr = `${filterDate.getFullYear()}-${pad(filterDate.getMonth() + 1)}-${pad(filterDate.getDate())}`;
+                recordDateStr = ymd(filterDate);
             }
 
             const payload = {
@@ -660,9 +750,7 @@ export default function AttendanceModule({ navigation }: any) {
                 reason: requestForm.reason
             };
 
-            const res = await axios.post(`${API_BASE}/checkout-requests`, payload, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const res = await axios.post(`${API_BASE}/checkout-requests`, payload, authCfg(token, 20000));
 
             if (res.data?.success) {
                 Alert.alert("Success 🎉", "Checkout request sent for approval!");
@@ -677,7 +765,7 @@ export default function AttendanceModule({ navigation }: any) {
         }
     };
 
-    // 🚀 MATH FUNCTION: Haversine distance calculator for Geo-fence (same as Dashboard)
+    // MATH FUNCTION: Haversine distance calculator for Geo-fence (same as Dashboard)
     const getDistanceFromLatLonInMeters = (lat1: number, lon1: number, lat2: number, lon2: number) => {
         const R = 6371;
         const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -690,7 +778,6 @@ export default function AttendanceModule({ navigation }: any) {
         return R * c * 1000;
     };
 
-    // 🚀 free reverse-geocoding via OpenStreetMap Nominatim (no API key) — same as Dashboard
     const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
         try {
             const res = await fetch(
@@ -706,7 +793,18 @@ export default function AttendanceModule({ navigation }: any) {
 
     const hasSelfCheckinPermission = permissions.some(p => p.includes('ATTENDANCE:SELF'));
 
-    // 🚀 Self check-in/out — card/button handler. Location/geofence logic is unchanged from Dashboard.
+    // 🚀 Floating button tap: card kholte hi latest today-record fetch hota hai
+    // (check-in / check-out / hours / status sab fresh + list wale logic ke same).
+    const openAttendanceCard = async () => {
+        setShowAttendanceCardModal(true);
+        setTodayLoading(true);
+        try {
+            await fetchTodayRecord();
+        } finally {
+            setTodayLoading(false);
+        }
+    };
+
     const handlePunch = async () => {
         if (!hasSelfCheckinPermission) {
             return Alert.alert(
@@ -722,7 +820,6 @@ export default function AttendanceModule({ navigation }: any) {
             );
         }
 
-        // 2) Individual (per-employee) flag
         if (selfCheckinAllowed === false) {
             return Alert.alert(
                 "Not Allowed",
@@ -778,7 +875,6 @@ export default function AttendanceModule({ navigation }: any) {
                         );
                     }
                 }
-                // Case A: locationEnabled is false — no validation, fall straight through to camera.
 
                 const addr = await reverseGeocode(userLat, userLng);
                 setPendingLocation({ latitude: userLat, longitude: userLng });
@@ -818,6 +914,7 @@ export default function AttendanceModule({ navigation }: any) {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'multipart/form-data',
                 },
+                timeout: 30000,
             });
 
             const rawPath =
@@ -833,8 +930,6 @@ export default function AttendanceModule({ navigation }: any) {
                 ? rawPath
                 : `${apiOrigin}${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
 
-            // use the dedicated, filter-independent todayRecord instead of
-            // searching the (possibly stale/filtered) `records` array.
             const isCheckingOut = todayRecord?.checkIn?.time && !todayRecord?.checkOut?.time;
             const endpoint = isCheckingOut ? '/attendance/checkout' : '/attendance/checkin';
 
@@ -846,7 +941,7 @@ export default function AttendanceModule({ navigation }: any) {
                     location: pendingLocation,
                     photoProof,
                 },
-                { headers: { Authorization: `Bearer ${token}` } }
+                authCfg(token, 20000)
             );
 
             Alert.alert("Success", `Successfully checked ${isCheckingOut ? 'out' : 'in'}!`);
@@ -872,7 +967,7 @@ export default function AttendanceModule({ navigation }: any) {
                 text: "Delete", style: "destructive", onPress: async () => {
                     try {
                         const token = await AsyncStorage.getItem('userToken');
-                        await axios.delete(`${API_BASE}/attendance/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+                        await axios.delete(`${API_BASE}/attendance/${id}`, authCfg(token));
                         fetchData(true);
                         fetchTodayRecord();
                     } catch (e) { }
@@ -911,7 +1006,24 @@ export default function AttendanceModule({ navigation }: any) {
         setIsAddModalVisible(true);
     };
 
-    // 🚀 DYNAMIC KPI CALCULATION FROM CORRECTED FRONTEND DATA
+    // 🚀 Date <-> Month mode switch
+    const switchMode = (m: 'date' | 'month') => {
+        if (m === filterMode) return;
+        if (m === 'month') {
+            setFilterMonth(filterDate.getMonth());
+            setFilterYear(filterDate.getFullYear());
+        } else if (filterDate.getMonth() !== filterMonth || filterDate.getFullYear() !== filterYear) {
+            const now = new Date();
+            setFilterDate(now.getMonth() === filterMonth && now.getFullYear() === filterYear ? now : new Date(filterYear, filterMonth, 1));
+        }
+        setFilterMode(m);
+    };
+
+    const filterLabel = filterMode === 'date'
+        ? getSafeDateString(filterDate)
+        : `${MONTHS[filterMonth]} ${filterYear}`;
+
+    // DYNAMIC KPI CALCULATION FROM CORRECTED FRONTEND DATA
     let totalPresentCount = 0;
     let absentCountLocal = 0;
     let lateCountLocal = 0;
@@ -924,7 +1036,7 @@ export default function AttendanceModule({ navigation }: any) {
         if (s === 'absent') {
             absentCountLocal++;
         } else if (s !== 'holiday' && s !== 'week-off') {
-            totalPresentCount++; // Present, Late, Half-day, Overtime sab isme count honge
+            totalPresentCount++;
             if (s === 'late') lateCountLocal++;
             if (s === 'half-day' || s === 'halfday') halfDayCountLocal++;
         }
@@ -1000,21 +1112,38 @@ export default function AttendanceModule({ navigation }: any) {
                     <KpiCard label="Total OT (Hrs)" val={otDisplayFormatted} color="#8B5CF6" bg="rgba(139,92,246,0.12)" icon="clock-plus-outline" isLast />
                 </ScrollView>
 
+                {/* 🚀 Row 1: Date | Month toggle + selected value + biometric sync */}
                 <View style={styles.filterRow}>
+                    <View style={[styles.segWrap, { borderColor: colors.border, backgroundColor: colors.cardBg }]}>
+                        {(['date', 'month'] as const).map(m => (
+                            <TouchableOpacity
+                                key={m}
+                                style={[styles.segBtn, filterMode === m && { backgroundColor: colors.primary || '#3B82F6' }]}
+                                onPress={() => switchMode(m)}
+                                activeOpacity={0.8}
+                            >
+                                <Text style={[styles.segText, { color: filterMode === m ? '#FFF' : colors.textSub }]}>
+                                    {m === 'date' ? 'Date' : 'Month'}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+
                     <TouchableOpacity
-                        style={[styles.filterPill, { borderColor: colors.primary, backgroundColor: colors.primary + '10' }]}
-                        onPress={() => setShowFilterDatePicker(true)}
+                        style={[styles.filterPill, { borderColor: colors.primary, backgroundColor: colors.primary + '10', flex: 1 }]}
+                        onPress={() => {
+                            if (filterMode === 'date') setShowFilterDatePicker(true);
+                            else { setPickerYear(filterYear); setShowMonthPicker(true); }
+                        }}
                         activeOpacity={0.8}
                     >
-                        <Text style={[styles.filterText, { color: colors.primary }]}>
-                            {canDo('VIEW') ? getSafeDateString(filterDate) : `${MONTHS[filterDate.getMonth()]} ${filterDate.getFullYear()}`}
-                        </Text>
-                        <Feather name="calendar" size={14} color={colors.primary} style={{ marginLeft: 6 }} />
+                        <Text style={[styles.filterText, { color: colors.primary }]}>{filterLabel}</Text>
+                        <Feather name={filterMode === 'date' ? 'calendar' : 'grid'} size={14} color={colors.primary} style={{ marginLeft: 6 }} />
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                        style={[styles.filterPill, { borderColor: '#10B981', backgroundColor: '#10B98110', paddingHorizontal: 12 }]}
-                        onPress={() => syncBiometric(false)}
+                        style={[styles.filterPill, { borderColor: '#10B981', backgroundColor: '#10B98110', paddingHorizontal: 12, marginRight: 0 }]}
+                        onPress={() => syncBiometric(true)}
                         disabled={isSyncing}
                         activeOpacity={0.8}
                     >
@@ -1024,15 +1153,31 @@ export default function AttendanceModule({ navigation }: any) {
                             <MaterialCommunityIcons name="fingerprint" size={18} color="#10B981" />
                         )}
                     </TouchableOpacity>
+                </View>
 
+                {/* Row 2: Employee + Status */}
+                <View style={styles.filterRow}>
                     {canDo('VIEW') && (
                         <TouchableOpacity style={[styles.filterPill, { borderColor: colors.border, backgroundColor: colors.cardBg, flex: 1 }]} onPress={() => setShowEmpModal(true)} activeOpacity={0.8}>
                             <Text style={[styles.filterText, { color: colors.textMain }]} numberOfLines={1}>{filterEmpName}</Text>
                             <Feather name="chevron-down" size={14} color={colors.textSub} />
                         </TouchableOpacity>
                     )}
-                    <TouchableOpacity style={[styles.filterPill, { borderColor: colors.border, backgroundColor: colors.cardBg }]} onPress={() => setShowStatusModal(true)} activeOpacity={0.8}><Text style={[styles.filterText, { color: colors.textMain }]}>{filterStatus}</Text></TouchableOpacity>
+                    <TouchableOpacity style={[styles.filterPill, { borderColor: colors.border, backgroundColor: colors.cardBg, marginRight: 0 }, !canDo('VIEW') && { flex: 1 }]} onPress={() => setShowStatusModal(true)} activeOpacity={0.8}>
+                        <Text style={[styles.filterText, { color: colors.textMain, textTransform: 'capitalize' }]}>{filterStatus}</Text>
+                    </TouchableOpacity>
                 </View>
+
+                {/* 🚀 Error + Retry (pehle fail hone par kuch nahi dikhta tha) */}
+                {!!loadError && !loading && (
+                    <View style={[styles.errorBox, { borderColor: 'rgba(239,68,68,0.3)' }]}>
+                        <MaterialCommunityIcons name="wifi-off" size={18} color="#DC2626" style={{ marginRight: 8 }} />
+                        <Text style={{ color: '#DC2626', fontSize: 12, fontWeight: '600', flex: 1 }}>{loadError}</Text>
+                        <TouchableOpacity onPress={() => fetchData(false)} style={styles.retryBtn} activeOpacity={0.8}>
+                            <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 12 }}>Retry</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
 
                 {loading && !refreshing ? <ActivityIndicator size="large" color="#3B82F6" style={{ marginTop: 50 }} /> : displayRecords.map((item, index) => {
 
@@ -1070,7 +1215,6 @@ export default function AttendanceModule({ navigation }: any) {
                                         <Text style={[styles.statusTagText, { color: statusStyle.text }]}>{statusText}</Text>
                                     </View>
 
-                                    {/* photo proof quick-view button */}
                                     {hasPhotoProof && (
                                         <TouchableOpacity
                                             style={[styles.editBtn, { backgroundColor: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.25)' }]}
@@ -1150,7 +1294,7 @@ export default function AttendanceModule({ navigation }: any) {
                     )
                 })}
 
-                {!loading && displayRecords.length === 0 && (
+                {!loading && !loadError && displayRecords.length === 0 && (
                     <View style={{ alignItems: 'center', marginTop: 50 }}>
                         <View style={styles.emptyIconWrap}>
                             <Feather name="inbox" size={40} color={colors.border} />
@@ -1205,16 +1349,14 @@ export default function AttendanceModule({ navigation }: any) {
                 </TouchableOpacity>
             )}
 
-            {/* 🚀 Self check-in/out — floating button. Tap opens the "Today's Attendance"
-          card centered on screen; the card itself carries out the actual punch.
-          Only rendered when the RBAC permission gate (Step 1) passes. */}
+            {/* Self check-in/out floating button. Tap par card khulta hai aur latest record fetch hota hai. */}
             {showSelfPunchFab && (
                 <TouchableOpacity
                     style={[
                         styles.punchFab,
                         { backgroundColor: checkinDisabledForFab ? '#94A3B8' : (isCheckingOutForFab ? '#EF4444' : '#3B82F6') }
                     ]}
-                    onPress={() => setShowAttendanceCardModal(true)}
+                    onPress={openAttendanceCard}
                     activeOpacity={0.85}
                 >
                     <MaterialCommunityIcons
@@ -1228,11 +1370,10 @@ export default function AttendanceModule({ navigation }: any) {
                 </TouchableOpacity>
             )}
 
-            {/* 🚀 premium "Today's Attendance" card, opened from the floating button above */}
-            <Modal visible={showAttendanceCardModal} transparent animationType="fade">
+            {/* "Today's Attendance" card */}
+            <Modal visible={showAttendanceCardModal} transparent animationType="fade" onRequestClose={() => setShowAttendanceCardModal(false)}>
                 <View style={styles.attModalOverlay}>
                     <View style={[styles.attModalCard, { backgroundColor: colors.cardBg }]}>
-                        {/* decorative accent blobs for a richer, premium feel */}
                         <View pointerEvents="none" style={[styles.attCardBlobLarge, { backgroundColor: isCheckingOutForFab ? 'rgba(239,68,68,0.08)' : 'rgba(59,130,246,0.08)' }]} />
                         <View pointerEvents="none" style={[styles.attCardBlobSmall, { backgroundColor: 'rgba(139,92,246,0.08)' }]} />
 
@@ -1270,7 +1411,7 @@ export default function AttendanceModule({ navigation }: any) {
                                     <MaterialCommunityIcons name="login" size={15} color="#3B82F6" />
                                 </View>
                                 <Text style={styles.attTimeLabel}>CHECK IN</Text>
-                                <Text style={[styles.attTimeValue, { color: '#3B82F6' }]}>{formatTimeUI(todayRecord?.checkIn)}</Text>
+                                <Text style={[styles.attTimeValue, { color: '#3B82F6' }]}>{todayLoading && !todayRecord ? '...' : formatTimeUI(todayRecord?.checkIn)}</Text>
                             </View>
 
                             <View style={styles.attTimeDividerLine} />
@@ -1280,7 +1421,7 @@ export default function AttendanceModule({ navigation }: any) {
                                     <MaterialCommunityIcons name="logout" size={15} color="#64748B" />
                                 </View>
                                 <Text style={styles.attTimeLabel}>CHECK OUT</Text>
-                                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{formatTimeUI(todayRecord?.checkOut)}</Text>
+                                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{todayLoading && !todayRecord ? '...' : formatTimeUI(todayRecord?.checkOut)}</Text>
                             </View>
 
                             <View style={styles.attTimeDividerLine} />
@@ -1290,7 +1431,7 @@ export default function AttendanceModule({ navigation }: any) {
                                     <MaterialCommunityIcons name="clock-outline" size={15} color="#8B5CF6" />
                                 </View>
                                 <Text style={styles.attTimeLabel}>HOURS</Text>
-                                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{formatWorkingHours(todayRecord?.workingHours)}</Text>
+                                <Text style={[styles.attTimeValue, { color: colors.textMain }]}>{todayLoading && !todayRecord ? '...' : formatWorkingHours(todayRecord?.workingHours)}</Text>
                             </View>
                         </View>
 
@@ -1305,12 +1446,12 @@ export default function AttendanceModule({ navigation }: any) {
                             </View>
                         ) : (
                             <TouchableOpacity
-                                style={[styles.attPunchBtn, isCheckingOutForFab ? styles.attPunchBtnOut : styles.attPunchBtnIn]}
+                                style={[styles.attPunchBtn, isCheckingOutForFab ? styles.attPunchBtnOut : styles.attPunchBtnIn, todayLoading && { opacity: 0.6 }]}
                                 onPress={handlePunch}
-                                disabled={punchLoading || checkingLocation}
+                                disabled={punchLoading || checkingLocation || todayLoading}
                                 activeOpacity={0.85}
                             >
-                                {(punchLoading || checkingLocation) ? <ActivityIndicator color="#fff" /> : (
+                                {(punchLoading || checkingLocation || todayLoading) ? <ActivityIndicator color="#fff" /> : (
                                     <>
                                         <View style={styles.attPunchIconWrap}>
                                             <MaterialCommunityIcons name={isCheckingOutForFab ? "logout" : "login"} size={18} color="#fff" />
@@ -1329,6 +1470,41 @@ export default function AttendanceModule({ navigation }: any) {
                         )}
                     </View>
                 </View>
+            </Modal>
+
+            {/* 🚀 NEW: Month picker (Jan-Dec + year) */}
+            <Modal visible={showMonthPicker} transparent animationType="fade" onRequestClose={() => setShowMonthPicker(false)}>
+                <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowMonthPicker(false)}>
+                    <TouchableOpacity activeOpacity={1} style={[styles.monthCard, { backgroundColor: colors.cardBg, borderColor: colors.border }]}>
+                        <View style={styles.monthYearRow}>
+                            <TouchableOpacity style={styles.monthYearBtn} onPress={() => setPickerYear(y => y - 1)} activeOpacity={0.7}>
+                                <Feather name="chevron-left" size={20} color={colors.textMain} />
+                            </TouchableOpacity>
+                            <Text style={[styles.monthYearText, { color: colors.textMain }]}>{pickerYear}</Text>
+                            <TouchableOpacity style={styles.monthYearBtn} onPress={() => setPickerYear(y => y + 1)} activeOpacity={0.7}>
+                                <Feather name="chevron-right" size={20} color={colors.textMain} />
+                            </TouchableOpacity>
+                        </View>
+                        <View style={styles.monthGrid}>
+                            {MONTHS.map((mn, i) => {
+                                const sel = i === filterMonth && pickerYear === filterYear;
+                                return (
+                                    <TouchableOpacity
+                                        key={mn}
+                                        style={[
+                                            styles.monthCell,
+                                            { borderColor: sel ? (colors.primary || '#3B82F6') : colors.border, backgroundColor: sel ? (colors.primary || '#3B82F6') : colors.background }
+                                        ]}
+                                        onPress={() => { setFilterMonth(i); setFilterYear(pickerYear); setShowMonthPicker(false); }}
+                                        activeOpacity={0.8}
+                                    >
+                                        <Text style={[styles.monthCellText, { color: sel ? '#FFF' : colors.textMain }]}>{mn}</Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+                    </TouchableOpacity>
+                </TouchableOpacity>
             </Modal>
 
             <Modal visible={isDownloadModalVisible} transparent animationType="fade">
@@ -1446,7 +1622,6 @@ export default function AttendanceModule({ navigation }: any) {
                 onClose={() => setShowFormEmp(false)} colors={colors}
             />
 
-            {/* photo proof viewer — opens per attendance record */}
             <PhotoProofModal
                 visible={showPhotoModal}
                 onClose={() => setShowPhotoModal(false)}
@@ -1455,7 +1630,6 @@ export default function AttendanceModule({ navigation }: any) {
                 employeeName={`${selectedPhotoRecord?.employeeId?.userId?.firstName || ''} ${selectedPhotoRecord?.employeeId?.userId?.lastName || ''}`.trim() || myName}
             />
 
-            {/* geo-tagged selfie camera for the self punch card — opens only after permission + geo-fence checks pass */}
             {pendingLocation && (
                 <GeoTagAttendanceCamera
                     visible={showGeoCam}
@@ -1471,12 +1645,10 @@ export default function AttendanceModule({ navigation }: any) {
                 />
             )}
 
+            {/* Date-wise filter: sirf wahi ek din */}
             {showFilterDatePicker && <DateTimePicker value={filterDate} mode="date" onChange={(e, d) => {
                 setShowFilterDatePicker(false);
-                if (e.type === 'set' && d) {
-                    setFilterDate(d);
-                    setIsDateFiltered(true);
-                }
+                if (e.type === 'set' && d) setFilterDate(d);
             }} />}
 
             {showDlStartPicker && <DateTimePicker value={dlStartDate} mode="date" onChange={(e, d) => {
@@ -1509,7 +1681,6 @@ const DropdownModal = ({ visible, onClose, title, data, onSelect, displayKey, co
     </Modal>
 );
 
-// 🎨 Premium KPI pill — tinted icon tile, colored accent border, glow shadow
 const KpiCard = ({ label, val, color, bg, icon, isLast }: any) => (
     <View style={[styles.kpiCard, { borderLeftColor: color, shadowColor: color }, isLast && { marginRight: 4 }]}>
         <View style={[styles.kpiIconTile, { backgroundColor: bg }]}>
@@ -1529,11 +1700,9 @@ const styles = StyleSheet.create({
     addBtn: { backgroundColor: '#3B82F6', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, flexDirection: 'row', alignItems: 'center', elevation: 4, shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 7 },
     addBtnText: { color: '#FFF', fontWeight: '800', fontSize: 12, marginLeft: 5 },
 
-    // 🚀 Floating self check-in/out button
     punchFab: { position: 'absolute', bottom: 30, right: 20, width: 58, height: 58, borderRadius: 29, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6 },
     punchFabPulseDot: { position: 'absolute', top: 6, right: 6, width: 10, height: 10, borderRadius: 5, backgroundColor: '#FBBF24', borderWidth: 2, borderColor: '#fff' },
 
-    // 🚀 Premium "Today's Attendance" modal card (opened via the floating button)
     attModalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', justifyContent: 'center', alignItems: 'center', padding: 24 },
     attModalCard: { width: '100%', maxWidth: 380, borderRadius: 30, padding: 26, overflow: 'hidden', elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20 },
     attCardBlobLarge: { position: 'absolute', width: 160, height: 160, borderRadius: 80, top: -70, right: -50 },
@@ -1566,9 +1735,28 @@ const styles = StyleSheet.create({
     kpiIconTile: { width: 34, height: 34, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
     kpiVal: { fontSize: 22, fontWeight: '900', marginTop: 2, letterSpacing: -0.3 },
     kpiLabel: { fontSize: 11, color: '#64748B', fontWeight: '700', marginTop: 4 },
-    filterRow: { flexDirection: 'row', marginBottom: 15, justifyContent: 'space-between' },
+    filterRow: { flexDirection: 'row', marginBottom: 10, justifyContent: 'space-between', alignItems: 'center' },
     filterPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderWidth: 1, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 14, marginRight: 6 },
     filterText: { fontSize: 12, fontWeight: '700' },
+
+    // 🚀 NEW: Date | Month segmented toggle
+    segWrap: { flexDirection: 'row', borderWidth: 1, borderRadius: 14, padding: 3, marginRight: 6 },
+    segBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 11 },
+    segText: { fontSize: 12, fontWeight: '800' },
+
+    // 🚀 NEW: Month picker
+    monthCard: { width: '86%', maxWidth: 360, borderRadius: 24, borderWidth: 1, padding: 18 },
+    monthYearRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+    monthYearBtn: { width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(148,163,184,0.14)' },
+    monthYearText: { fontSize: 18, fontWeight: '900' },
+    monthGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+    monthCell: { width: '23%', paddingVertical: 13, borderRadius: 12, borderWidth: 1, alignItems: 'center', marginBottom: 10 },
+    monthCellText: { fontSize: 13, fontWeight: '800' },
+
+    // 🚀 NEW: error banner
+    errorBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF2F2', borderWidth: 1, borderRadius: 14, padding: 12, marginBottom: 12 },
+    retryBtn: { backgroundColor: '#DC2626', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, marginLeft: 8 },
+
     attCard: { padding: 17, borderRadius: 22, borderWidth: 1, borderLeftWidth: 4, marginBottom: 12, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.07, shadowRadius: 8 },
     cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
     userInfo: { flexDirection: 'row', alignItems: 'center' },

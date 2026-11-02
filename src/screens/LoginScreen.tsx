@@ -32,6 +32,9 @@ const SAVED_LOGIN_ENABLED = "savedLoginEnabled";
 const SAVED_LOGIN_EMAIL = "savedLoginEmail";
 const SAVED_LOGIN_PASSWORD = "savedLoginPassword";
 
+// Keep me logged in key (NEW)
+const KEEP_LOGGED_IN = "keepLoggedIn";
+
 
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState("");
@@ -41,6 +44,8 @@ export default function LoginScreen({ navigation }: any) {
   const [loginStatus, setLoginStatus] = useState<"idle" | "loading" | "success">(
     "idle"
   );
+  // NEW: jab tak session check ho raha hai, login form na dikhe
+  const [checkingSession, setCheckingSession] = useState(true);
 
   const buttonWidth = useRef(new Animated.Value(screenWidth - 60)).current;
   const formTranslateX = useRef(new Animated.Value(0)).current;
@@ -48,6 +53,7 @@ export default function LoginScreen({ navigation }: any) {
     .current;
 
   useEffect(() => {
+    checkSession();
     loadSavedLoginDetails();
 
     const animations = entranceAnims.map((anim) =>
@@ -61,6 +67,23 @@ export default function LoginScreen({ navigation }: any) {
 
     Animated.stagger(120, animations).start();
   }, []);
+
+  // NEW: app open hote hi check karo user ne "Keep me logged in" kiya tha ya nahi
+  const checkSession = async () => {
+    try {
+      const keep = await AsyncStorage.getItem(KEEP_LOGGED_IN);
+      const token = await AsyncStorage.getItem("userToken");
+      const userId = await AsyncStorage.getItem("userId");
+
+      if (keep === "true" && (token || userId)) {
+        navigation.replace("DrawerRoot");
+        return;
+      }
+    } catch (error) {
+      console.log("Session check error:", error);
+    }
+    setCheckingSession(false);
+  };
 
   const loadSavedLoginDetails = async () => {
     try {
@@ -205,7 +228,8 @@ const handleLogin = async () => {
       await AsyncStorage.removeItem("userAvatar");
     }
 
-    
+    // NEW: "Keep me logged in" ka flag save karo
+    await AsyncStorage.setItem(KEEP_LOGGED_IN, remember ? "true" : "false");
 
 setLoginStatus("success");
 
@@ -290,6 +314,22 @@ if (remember) {
       },
     ],
   });
+
+// NEW: session check hone tak loader dikhao, taaki login page flash na ho
+if (checkingSession) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: "#DBEAFE",
+      }}
+    >
+      <ActivityIndicator size="large" color="#1976D2" />
+    </View>
+  );
+}
 
 return (
   <KeyboardAvoidingView
